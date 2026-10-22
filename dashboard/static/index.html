@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DC Motor Health Monitor &amp; Diagnostic System</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Top App Navigation & Source Switcher -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-icon">M</div>
+      <div>
+        <h1 class="brand-title">DC Motor Health Monitor</h1>
+        <p class="brand-subtitle">Real-Time Sensor Telemetry &bull; Predictive Diagnostics</p>
+      </div>
+    </div>
+
+    <div class="header-controls">
+      <!-- Audio Alert Toggle -->
+      <button type="button" class="btn-audio" id="btnAudioToggle" onclick="toggleAudioAlerts()" title="Toggle audible alarms">
+        <span id="audioIcon">🔊</span>
+        <span id="audioText">Alert Audio: ON</span>
+      </button>
+
+      <!-- Source Switcher (Simulation vs Hardware) -->
+      <div class="source-switcher">
+        <button type="button" class="source-tab active" id="tabSim" onclick="selectDataSource('SIMULATION')">
+          <span class="dot dot-sim"></span> Simulation Mode
+        </button>
+        <button type="button" class="source-tab" id="tabHw" onclick="selectDataSource('HARDWARE')">
+          <span class="dot dot-hw"></span> Raspberry Pi Pico
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hardware Serial Connection Drawer (Visible when Pico is selected) -->
+  <div class="hardware-drawer" id="hwDrawer" style="display: none;">
+    <div class="drawer-content">
+      <div class="drawer-field">
+        <label for="comPortSelect">COM Port:</label>
+        <select id="comPortSelect" class="form-select"></select>
+        <button type="button" class="btn-text" onclick="refreshSerialPorts()">Scan Ports</button>
+      </div>
+
+      <div class="drawer-field">
+        <label for="baudSelect">Baud Rate:</label>
+        <select id="baudSelect" class="form-select">
+          <option value="115200" selected>115200</option>
+          <option value="57600">57600</option>
+          <option value="9600">9600</option>
+        </select>
+      </div>
+
+      <button type="button" class="btn-connect" id="btnConnect" onclick="toggleHardwareConnection()">
+        Connect to Pico
+      </button>
+      
+      <span class="connection-status-pill" id="connStatusPill">Offline</span>
+    </div>
+  </div>
+
+  <main class="main-content">
+
+    <!-- 1. Prominent Human-Readable Health Status & Warning Card -->
+    <section class="status-banner" id="statusBanner">
+      <div class="status-banner-header">
+        <div class="status-badge" id="statusBadge">NORMAL</div>
+        <div class="status-summary" id="statusSummary">All systems operating within nominal engineering parameters.</div>
+      </div>
+      <div class="warning-items-container" id="warningItemsContainer" style="display: none;">
+        <!-- Dynamically populated human-readable warning cards -->
+      </div>
+    </section>
+
+    <!-- 2. Primary Key Metric Cards (Spacious, high-legibility) -->
+    <section class="metrics-grid">
+      <!-- Speed -->
+      <div class="metric-card" id="cardSpeed">
+        <div class="metric-header">
+          <span class="metric-label">Motor Speed</span>
+          <span class="metric-badge">Optical Sensor</span>
+        </div>
+        <div class="metric-value-row">
+          <span class="metric-num" id="valRpm">0</span>
+          <span class="metric-unit">RPM</span>
+        </div>
+        <div class="metric-footer">
+          <span>Commanded: <strong id="valPwm">0%</strong></span>
+          <span>&omega;: <strong id="valOmega">0.0</strong> rad/s</span>
+        </div>
+      </div>
+
+      <!-- Current Draw -->
+      <div class="metric-card" id="cardCurrent">
+        <div class="metric-header">
+          <span class="metric-label">Armature Current</span>
+          <span class="metric-badge">INA219</span>
+        </div>
+        <div class="metric-value-row">
+          <span class="metric-num" id="valCurrent">0</span>
+          <span class="metric-unit">mA</span>
+        </div>
+        <div class="metric-footer">
+          <span>Safe Limit: <strong>900 mA</strong></span>
+          <span>Power: <strong id="valPower">0.0 W</strong></span>
+        </div>
+      </div>
+
+      <!-- Surface Temperature -->
+      <div class="metric-card" id="cardTemp">
+        <div class="metric-header">
+          <span class="metric-label">Casing Temperature</span>
+          <span class="metric-badge">DS18B20</span>
+        </div>
+        <div class="metric-value-row">
+          <span class="metric-num" id="valTemp">25.0</span>
+          <span class="metric-unit">&deg;C</span>
+        </div>
+        <div class="metric-footer">
+          <span>Max Threshold: <strong>50.0 &deg;C</strong></span>
+          <span>Ambient: <strong>25.0 &deg;C</strong></span>
+        </div>
+      </div>
+
+      <!-- Vibration RMS -->
+      <div class="metric-card" id="cardVib">
+        <div class="metric-header">
+          <span class="metric-label">Mechanical Vibration</span>
+          <span class="metric-badge">MPU-6050</span>
+        </div>
+        <div class="metric-value-row">
+          <span class="metric-num" id="valVib">0.00</span>
+          <span class="metric-unit">g RMS</span>
+        </div>
+        <div class="metric-footer">
+          <span>Shock Limit: <strong>1.80 g</strong></span>
+          <span>Filter: <strong>44 Hz DLPF</strong></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Secondary Diagnostics Strip -->
+    <section class="sub-metrics-strip">
+      <div class="sub-metric">
+        <span class="sub-label">DC Bus Voltage</span>
+        <span class="sub-val" id="valVoltage">12.00 V</span>
+      </div>
+      <div class="sub-metric">
+        <span class="sub-label">Voltage Sag</span>
+        <span class="sub-val" id="valSag">0.00 V</span>
+      </div>
+      <div class="sub-metric">
+        <span class="sub-label">Coast Deceleration</span>
+        <span class="sub-val" id="valDecel">0.0 rad/s&sup2;</span>
+      </div>
+      <div class="sub-metric">
+        <span class="sub-label">Telemetry Rate</span>
+        <span class="sub-val" id="valPacketRate">10 Hz</span>
+      </div>
+    </section>
+
+    <!-- 3. Dual Control Panels: Motor Speed Control & Fault Injection Lab -->
+    <div class="panels-grid">
+
+      <!-- Panel A: Motor Speed Controller -->
+      <section class="card-panel">
+        <div class="card-panel-header">
+          <h2>Motor Speed Control</h2>
+          <span class="panel-subtitle">L298N Driver &bull; 20 kHz PWM</span>
+        </div>
+        <div class="card-panel-body">
+          <div class="slider-wrapper">
+            <div class="slider-info">
+              <span>Target Duty Cycle:</span>
+              <span class="slider-val-badge" id="sliderValBadge">0%</span>
+            </div>
+            <input type="range" id="speedSlider" min="0" max="100" value="0" step="1" oninput="updateSliderBadge(this.value)" onchange="applySpeed(this.value)">
+          </div>
+
+          <div class="quick-buttons">
+            <button type="button" class="btn-chip" onclick="applySpeed(0)">Stop (0%)</button>
+            <button type="button" class="btn-chip" onclick="applySpeed(25)">Low (25%)</button>
+            <button type="button" class="btn-chip" onclick="applySpeed(50)">Medium (50%)</button>
+            <button type="button" class="btn-chip" onclick="applySpeed(75)">High (75%)</button>
+            <button type="button" class="btn-chip" onclick="applySpeed(100)">Max (100%)</button>
+          </div>
+
+          <div class="action-buttons-row">
+            <button type="button" class="btn-estop" onclick="triggerEmergencyStop()">
+              &#9888; EMERGENCY STOP (0%)
+            </button>
+            <button type="button" class="btn-test-cycle" id="btnTestCycle" onclick="toggleTestCycle()">
+              Start Automated Test Cycle
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Panel B: Interactive Simulation & Fault Injection Lab -->
+      <section class="card-panel">
+        <div class="card-panel-header">
+          <h2>Simulation Fault Injection Lab</h2>
+          <span class="panel-subtitle">Click events below to simulate real failure modes</span>
+        </div>
+        <div class="card-panel-body">
+          <div class="faults-grid">
+            <!-- Overheat -->
+            <button type="button" class="fault-button" id="btnFaultOverheat" onclick="toggleFault('overheat')">
+              <span class="fault-icon">&#128293;</span>
+              <div class="fault-text">
+                <strong>Simulate Overheating</strong>
+                <span>Pushes casing temperature above 50&deg;C limit</span>
+              </div>
+            </button>
+
+            <!-- Overcurrent -->
+            <button type="button" class="fault-button" id="btnFaultOvercurrent" onclick="toggleFault('overcurrent')">
+              <span class="fault-icon">&#9889;</span>
+              <div class="fault-text">
+                <strong>Simulate Overload / High Current</strong>
+                <span>Surges current draw past 900 mA alarm limit</span>
+              </div>
+            </button>
+
+            <!-- Vibration -->
+            <button type="button" class="fault-button" id="btnFaultVib" onclick="toggleFault('vibration')">
+              <span class="fault-icon">&#12336;</span>
+              <div class="fault-text">
+                <strong>Simulate Severe Vibration</strong>
+                <span>Triggers mechanical shock past 1.80 g RMS</span>
+              </div>
+            </button>
+
+            <!-- Jam / Stall -->
+            <button type="button" class="fault-button" id="btnFaultStall" onclick="toggleFault('stall')">
+              <span class="fault-icon">&#128721;</span>
+              <div class="fault-text">
+                <strong>Simulate Rotor Jam / Stall</strong>
+                <span>Locks shaft to 0 RPM while power is applied</span>
+              </div>
+            </button>
+
+            <!-- Worn Bearing -->
+            <button type="button" class="fault-button" id="btnFaultBearing" onclick="toggleFault('bearing_drag')">
+              <span class="fault-icon">&#9881;</span>
+              <div class="fault-text">
+                <strong>Simulate Worn Bearing Drag</strong>
+                <span>Causes steep deceleration during coast-down</span>
+              </div>
+            </button>
+
+            <!-- Voltage Sag -->
+            <button type="button" class="fault-button" id="btnFaultVoltage" onclick="toggleFault('voltage_drop')">
+              <span class="fault-icon">&#128267;</span>
+              <div class="fault-text">
+                <strong>Simulate Low Supply Voltage</strong>
+                <span>Drops supply voltage down to 9.8 Volts</span>
+              </div>
+            </button>
+          </div>
+
+          <div class="fault-reset-container">
+            <button type="button" class="btn-reset-faults" onclick="resetAllFaults()">
+              &#8634; Clear All Injected Faults (Return to Normal)
+            </button>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- 4. Clean Real-Time Oscilloscope Strip Charts -->
+    <section class="card-panel chart-section">
+      <div class="card-panel-header">
+        <h2>Live Telemetry Charts</h2>
+        <div class="chart-indicators">
+          <span class="chart-tag tag-rpm">&mdash; Velocity (RPM)</span>
+          <span class="chart-tag tag-current">&mdash; Current (mA)</span>
+          <span class="chart-tag tag-vib">&mdash; Vibration (g)</span>
+          <span class="chart-tag tag-temp">&mdash; Temp (&deg;C)</span>
+        </div>
+      </div>
+      <div class="card-panel-body charts-body">
+        <div class="dual-charts-grid">
+          <div class="chart-box">
+            <div class="chart-title">Rotor Speed &bull; Scale: 0 - 3200 RPM</div>
+            <canvas id="canvasRpm" width="600" height="130"></canvas>
+          </div>
+          <div class="chart-box">
+            <div class="chart-title">Current Draw &bull; Scale: 0 - 1200 mA (Alarm @ 900 mA)</div>
+            <canvas id="canvasCurrent" width="600" height="130"></canvas>
+          </div>
+          <div class="chart-box">
+            <div class="chart-title">Vibration Magnitude &bull; Scale: 0 - 3.0 g (Alarm @ 1.80 g)</div>
+            <canvas id="canvasVib" width="600" height="130"></canvas>
+          </div>
+          <div class="chart-box">
+            <div class="chart-title">Casing Temperature &bull; Scale: 20 - 65 &deg;C (Alarm @ 50 &deg;C)</div>
+            <canvas id="canvasTemp" width="600" height="130"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,728 @@
+/* ==============================================================================
+   DC MOTOR HEALTH MONITOR - MODERN PRODUCTION DASHBOARD
+   Design: Clean, spacious, high-contrast engineering UI.
+   Zero AI frosted glass, zero AI jargon, maximum clarity and legibility.
+   ============================================================================== */
+
+:root {
+  --bg-page: #0b0f19;
+  --bg-card: #131c2e;
+  --bg-card-sub: #0f1726;
+  --bg-input: #1a2438;
+  
+  --border-color: #23314a;
+  --border-focus: #3b82f6;
+
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+
+  --color-green: #10b981;
+  --color-green-bg: #064e3b;
+  --color-amber: #f59e0b;
+  --color-amber-bg: #78350f;
+  --color-red: #ef4444;
+  --color-red-bg: #7f1d1d;
+  --color-blue: #38bdf8;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SF Mono", "Consolas", "Roboto Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-page);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  padding: 16px 24px 32px 24px;
+}
+
+/* =============================================================================
+   1. APP HEADER & SOURCE SWITCHER
+   ============================================================================= */
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-icon {
+  width: 36px;
+  height: 36px;
+  background-color: #2563eb;
+  color: #fff;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 18px;
+}
+
+.brand-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: -0.3px;
+}
+
+.brand-subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.btn-audio {
+  background-color: var(--bg-card);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.btn-audio:hover {
+  background-color: #1e293b;
+  color: #fff;
+}
+
+.btn-audio.muted {
+  color: var(--text-muted);
+  border-color: #334155;
+}
+
+.source-switcher {
+  display: flex;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.source-tab {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.15s ease;
+}
+
+.source-tab:hover {
+  color: #fff;
+}
+
+.source-tab.active {
+  background-color: #2563eb;
+  color: #fff;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dot-sim { background-color: #38bdf8; }
+.dot-hw { background-color: #10b981; }
+
+/* Hardware Drawer */
+.hardware-drawer {
+  background-color: #111a2c;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.drawer-content {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 13px;
+}
+
+.drawer-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drawer-field label {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.form-select {
+  background-color: var(--bg-input);
+  color: #fff;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  outline: none;
+}
+
+.btn-text {
+  background: transparent;
+  border: none;
+  color: var(--color-blue);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-text:hover { text-decoration: underline; }
+
+.btn-connect {
+  background-color: var(--color-green);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-connect:hover { background-color: #059669; }
+
+.btn-connect.connected {
+  background-color: #dc2626;
+}
+
+.connection-status-pill {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 12px;
+  background-color: #334155;
+  color: #94a3b8;
+}
+
+.connection-status-pill.online {
+  background-color: var(--color-green-bg);
+  color: #34d399;
+}
+
+/* =============================================================================
+   2. HUMAN-READABLE WARNING & HEALTH STATUS BANNER
+   ============================================================================= */
+.status-banner {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-left: 5px solid var(--color-green);
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+  transition: all 0.2s ease;
+}
+
+.status-banner.state-warning {
+  border-left-color: var(--color-amber);
+  background-color: #1c1810;
+}
+
+.status-banner.state-alarm {
+  border-left-color: var(--color-red);
+  background-color: #241113;
+}
+
+.status-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.status-badge {
+  font-size: 12px;
+  font-weight: 800;
+  padding: 4px 10px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  background-color: var(--color-green-bg);
+  color: #34d399;
+}
+
+.status-banner.state-warning .status-badge {
+  background-color: var(--color-amber-bg);
+  color: #fbbf24;
+}
+
+.status-banner.state-alarm .status-badge {
+  background-color: var(--color-red-bg);
+  color: #f87171;
+}
+
+.status-summary {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.warning-items-container {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 12px;
+}
+
+.warning-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background-color: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+
+.warning-card.critical {
+  border-left: 3px solid var(--color-red);
+}
+
+.warning-card.warning {
+  border-left: 3px solid var(--color-amber);
+}
+
+.warning-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.warning-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 2px;
+}
+
+.warning-desc {
+  font-size: 12px;
+  color: #cbd5e1;
+}
+
+/* =============================================================================
+   3. PRIMARY METRICS GRID
+   ============================================================================= */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 900px) {
+  .metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.metric-card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.metric-card.alert-state {
+  border-color: var(--color-red);
+  background-color: #221215;
+}
+
+.metric-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.metric-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.metric-badge {
+  font-size: 10px;
+  color: var(--text-muted);
+  background-color: var(--bg-card-sub);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.metric-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.metric-num {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: -1px;
+}
+
+.metric-card.alert-state .metric-num {
+  color: #f87171;
+}
+
+.metric-unit {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.metric-footer {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  padding-top: 8px;
+}
+
+.metric-footer strong {
+  color: #cbd5e1;
+}
+
+/* Sub-metrics horizontal bar */
+.sub-metrics-strip {
+  display: flex;
+  gap: 20px;
+  background-color: var(--bg-card-sub);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  font-size: 12px;
+}
+
+.sub-metric {
+  display: flex;
+  gap: 6px;
+}
+
+.sub-label { color: var(--text-muted); }
+.sub-val { color: #f1f5f9; font-weight: 600; font-family: var(--font-mono); }
+
+/* =============================================================================
+   4. DUAL CONTROL PANELS (SPEED + FAULT LAB)
+   ============================================================================= */
+.panels-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.25fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 950px) {
+  .panels-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.card-panel {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.card-panel-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.card-panel-header h2 {
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.panel-subtitle {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.card-panel-body {
+  padding: 16px 18px;
+}
+
+/* Speed Slider & Quick Buttons */
+.slider-wrapper {
+  margin-bottom: 14px;
+}
+
+.slider-info {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.slider-val-badge {
+  color: var(--color-blue);
+  font-weight: 800;
+  font-size: 14px;
+}
+
+input[type="range"] {
+  width: 100%;
+  height: 6px;
+  background-color: #334155;
+  border-radius: 4px;
+  outline: none;
+  -webkit-appearance: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  background-color: #38bdf8;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+.quick-buttons {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.btn-chip {
+  background-color: var(--bg-card-sub);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 6px 0;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-chip:hover {
+  background-color: #23314a;
+  color: #fff;
+}
+
+.action-buttons-row {
+  display: flex;
+  gap: 10px;
+}
+
+.btn-estop {
+  flex: 1.2;
+  background-color: #b91c1c;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-estop:hover { background-color: #dc2626; }
+
+.btn-test-cycle {
+  flex: 1;
+  background-color: #1e3a8a;
+  color: #bfdbfe;
+  border: 1px solid #3b82f6;
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.btn-test-cycle:hover { background-color: #2563eb; color: #fff; }
+.btn-test-cycle.active { background-color: #047857; border-color: #10b981; color: #fff; }
+
+/* Fault Injection Grid */
+.faults-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.fault-button {
+  background-color: var(--bg-card-sub);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.fault-button:hover {
+  background-color: #19253d;
+  border-color: #3b82f6;
+}
+
+.fault-button.active {
+  background-color: #2b1115;
+  border-color: #ef4444;
+}
+
+.fault-icon {
+  font-size: 16px;
+  margin-top: 2px;
+}
+
+.fault-text strong {
+  display: block;
+  font-size: 12px;
+  color: #fff;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.fault-button.active .fault-text strong {
+  color: #fca5a5;
+}
+
+.fault-text span {
+  display: block;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.fault-reset-container {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-reset-faults {
+  background-color: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-reset-faults:hover {
+  background-color: #1e293b;
+  color: #fff;
+  border-color: #64748b;
+}
+
+/* =============================================================================
+   5. LIVE TELEMETRY CHARTS
+   ============================================================================= */
+.chart-section {
+  margin-bottom: 16px;
+}
+
+.chart-indicators {
+  display: flex;
+  gap: 14px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.tag-rpm { color: var(--color-blue); }
+.tag-current { color: var(--color-amber); }
+.tag-vib { color: #fb923c; }
+.tag-temp { color: #f87171; }
+
+.charts-body {
+  padding: 14px 18px;
+}
+
+.dual-charts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+@media (max-width: 800px) {
+  .dual-charts-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.chart-box {
+  background-color: #0b111d;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.chart-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 120px;
+}
