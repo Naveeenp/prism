@@ -1,0 +1,7 @@
+# DC Motor Health Monitoring System - Python Dependencies
+#
+# Note: The simulation engine and web dashboard can run purely on Python's
+# standard library. pyserial is required when connecting to the physical
+# Raspberry Pi Pico H via USB Serial.
+
+pyserial>=3.5
