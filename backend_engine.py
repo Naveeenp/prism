@@ -67,7 +67,7 @@ class AlarmEvent:
 # ==============================================================================
 class ArmatureResistanceEstimator:
     """
-    In-Situ Armature Resistance (Ra) Calculator:
+    In-Situ Armature Resistance (Ra) Calculator & Estimator:
     Theoretical Basis:
         Vt = Eb + Ia * Ra
         At locked-rotor, sub-stall pulse, or immediate startup transient:
@@ -77,12 +77,20 @@ class ArmatureResistanceEstimator:
     Fault Detection:
         - Ra << Ra_nominal: Inter-turn short circuit / Insulation breakdown
         - Ra >> Ra_nominal: Commutator wear / Brush contact resistance / High lead impedance
+
+    Physical Sensing Note:
+        Path: L298N OUT1 -> INA219 VIN+ -> INA219 VIN- -> Motor(+) -> Motor(-) -> L298N OUT2
+        INA219 bus voltage measures V(VIN-) with respect to GND.
+        During forward conduction, the low-side Darlington transistor drops Vce_sat ≈ 0.9V - 1.2V.
+        The terminal voltage across the motor is V_term ≈ V_bus - Vce_sat_low.
+        Uncalibrated measurements reflect motor winding resistance lumped with driver drop.
     """
     def __init__(self, nominal_ra_ohms: float = 2.40, tolerance_pct: float = 20.0):
         self.nominal_ra = nominal_ra_ohms
         self.tolerance_pct = tolerance_pct
         self.last_calculated_ra: Optional[float] = None
         self.last_status: str = "NOT_MEASURED"
+        self.measurement_note: str = "UNCALIBRATED — single-ended INA219 bus voltage includes L298N low-side Vce drop"
         self.sample_buffer: List[Tuple[float, float]] = [] # [(v_bus, i_a)]
 
     def record_sample(self, v_bus: float, i_ma: float):
@@ -92,14 +100,19 @@ class ArmatureResistanceEstimator:
 
     def compute_ra(self) -> Tuple[Optional[float], str, str]:
         """
-        Calculates Ra from buffered inrush samples using robust mean/median.
+        Calculates Ra from buffered inrush samples using robust trimmed mean.
+        Compensates for estimated 1.0V L298N low-side saturation drop.
         Returns: (Ra_ohms, health_classification, diagnostic_message)
         """
         if not self.sample_buffer:
             return None, "NO_DATA", "No valid voltage/current pulse samples collected"
 
-        # Calculate Ra for each sample: Vt / Ia
-        ra_values = [v / i for (v, i) in self.sample_buffer if i > 0.05]
+        # Calculate Ra for each sample: (V_bus - Vce_sat_low) / Ia
+        ra_values = []
+        for (v, i) in self.sample_buffer:
+            if i > 0.05:
+                v_motor = (v - 1.0) if v > 1.2 else v
+                ra_values.append(v_motor / i)
         self.sample_buffer.clear()
 
         if not ra_values:
@@ -121,19 +134,19 @@ class ArmatureResistanceEstimator:
 
         if dev_pct < -30.0:
             status = AlarmSeverity.CRITICAL
-            msg = f"Insulation Breakdown Detected: Ra={ra_est:.2f}Ω ({dev_pct:.1f}% below nominal). Risk of shorted turns."
+            msg = f"Insulation Breakdown Suspected: Ra={ra_est:.2f}Ω ({dev_pct:.1f}% below nominal). Risk of shorted turns. [{self.measurement_note}]"
         elif dev_pct < -15.0:
             status = AlarmSeverity.CAUTION
-            msg = f"Potential Coil Degradation: Ra={ra_est:.2f}Ω ({dev_pct:.1f}% below nominal)."
+            msg = f"Potential Coil Degradation: Ra={ra_est:.2f}Ω ({dev_pct:.1f}% below nominal). [{self.measurement_note}]"
         elif dev_pct > 35.0:
             status = AlarmSeverity.CRITICAL
-            msg = f"Severe Contact Wear: Ra={ra_est:.2f}Ω (+{dev_pct:.1f}%). Commutator fouling or brush wear."
+            msg = f"Severe Contact Wear: Ra={ra_est:.2f}Ω (+{dev_pct:.1f}%). Commutator fouling or brush wear. [{self.measurement_note}]"
         elif dev_pct > 15.0:
             status = AlarmSeverity.CAUTION
-            msg = f"Elevated Resistance: Ra={ra_est:.2f}Ω (+{dev_pct:.1f}%). Minor brush oxidation."
+            msg = f"Elevated Resistance: Ra={ra_est:.2f}Ω (+{dev_pct:.1f}%). Minor brush oxidation. [{self.measurement_note}]"
         else:
             status = AlarmSeverity.NORMAL
-            msg = f"Armature Resistance Nominal: Ra={ra_est:.2f}Ω (Deviation: {dev_pct:+.1f}%)."
+            msg = f"Armature Resistance Nominal: Ra={ra_est:.2f}Ω (Deviation: {dev_pct:+.1f}%). [{self.measurement_note}]"
 
         self.last_status = status
         return self.last_calculated_ra, status, msg
@@ -385,11 +398,12 @@ class ESP32SerialWorker(threading.Thread):
     - Handles bi-directional handshakes (ACK / ERR)
     - Automatically recovers from serial disconnections
     """
-    def __init__(self, port: str = "COM3", baud: int = 115200, data_callback: Optional[Callable] = None):
+    def __init__(self, port: str = "COM3", baud: int = 115200, data_callback: Optional[Callable] = None, ack_callback: Optional[Callable] = None):
         super().__init__(daemon=True)
         self.port = port
         self.baud = baud
         self.data_callback = data_callback
+        self.ack_callback = ack_callback
 
         self.ser: Optional[serial.Serial] = None
         self.is_running: bool = False
@@ -505,6 +519,11 @@ class ESP32SerialWorker(threading.Thread):
         # Handshake / Command ACK checks
         if line.startswith("ACK:") or line.startswith("ERR:"):
             logger.info(f"ESP32 Protocol Handshake: {line}")
+            if self.ack_callback:
+                try:
+                    self.ack_callback(line)
+                except Exception as e:
+                    logger.debug(f"Error in ack_callback: {e}")
             return
 
         parsed_data = None
@@ -573,8 +592,11 @@ class SCADABackendEngine:
         self.coast_analyzer = CoastDownAnalyzer(rotor_inertia_kg_m2=1.25e-5, nominal_coast_time_s=2.20)
         self.csv_logger = TelemetryCSVLogger()
 
-        # Serial Worker
-        self.serial_worker = ESP32SerialWorker(data_callback=self._on_telemetry_frame)
+        # Serial Worker with bidirectional telemetry and handshake routing
+        self.serial_worker = ESP32SerialWorker(
+            data_callback=self._on_telemetry_frame,
+            ack_callback=self._on_serial_handshake
+        )
         self.serial_worker.start()
 
         # System State
@@ -723,6 +745,47 @@ class SCADABackendEngine:
         self.alarm_ledger.append(event)
         if len(self.alarm_ledger) > 200:
             self.alarm_ledger.pop(0)
+
+    def _on_serial_handshake(self, line: str):
+        """Processes protocol handshakes, ACKs, and diagnostic results from ESP32."""
+        with self.lock:
+            if line.startswith("ACK:MEASURE_RA:"):
+                # Example: ACK:MEASURE_RA:V_bus=12.04,V_in+=12.07,I=480.0,Ra=2.300,note=ESTIMATED_UNCALIBRATED
+                payload = line.split("ACK:MEASURE_RA:")[1]
+                fields = dict(item.split("=") for item in payload.split(",") if "=" in item)
+                try:
+                    ra_val = float(fields.get("Ra", 0.0))
+                    v_bus = float(fields.get("V_bus", 0.0))
+                    i_ma = float(fields.get("I", 0.0))
+                    if ra_val > 0.0:
+                        self.ra_estimator.last_calculated_ra = round(ra_val, 3)
+                        self.latest_telemetry["ra_ohms"] = round(ra_val, 3)
+                        self._add_alarm(
+                            AlarmSeverity.NORMAL,
+                            "RA_ESTIMATOR",
+                            f"In-Situ Ra Test Complete: {ra_val:.3f}Ω (V_bus={v_bus:.2f}V, I={i_ma:.1f}mA) [UNCALIBRATED]"
+                        )
+                except ValueError as e:
+                    logger.debug(f"Error parsing Ra handshake: {e}")
+
+            elif line.startswith("ACK:DRIVER_POWER:"):
+                state = line.split("ACK:DRIVER_POWER:")[1].strip()
+                is_on = (state == "ON")
+                self.latest_telemetry["driver_pwr"] = is_on
+                self._add_alarm(
+                    AlarmSeverity.NORMAL if is_on else AlarmSeverity.CAUTION,
+                    "DRIVER_PWR",
+                    f"Driver Power {state} confirmed by hardware"
+                )
+
+            elif line.startswith("ERR:WATCHDOG_TIMEOUT:"):
+                self.latest_telemetry["driver_pwr"] = False
+                self.sim_speed_pwm = 0.0
+                self._add_alarm(
+                    AlarmSeverity.CRITICAL,
+                    "SAFETY",
+                    "ESP32 Failsafe Watchdog Triggered: Motor Output Halted"
+                )
 
     # --------------------------------------------------------------------------
     # Control & Diagnostic Triggers (Commands Sent to ESP32)

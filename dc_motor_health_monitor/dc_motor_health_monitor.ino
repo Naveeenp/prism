@@ -244,6 +244,16 @@ void calculateSpeed() {
 // =============================================================================
 // IN-SITU ARMATURE RESISTANCE (Ra) PULSE TEST ROUTINE
 // =============================================================================
+// MEASUREMENT TOPOLOGY & SENSING LIMITATIONS:
+// Series Path: L298N OUT1 -> INA219 VIN+ -> INA219 VIN- -> Motor(+) -> Motor(-) -> L298N OUT2
+// 1. INA219 getBusVoltage_V() measures the single-ended potential at VIN- relative to GND.
+// 2. The high-side rail is VIN+ = BusVoltage + (ShuntVoltage_mV / 1000.0).
+// 3. Differential motor terminal voltage V_motor = V(Motor+) - V(Motor-) = V(VIN-) - V(OUT2).
+//    During active forward drive, OUT2 sits above ground by the L298N low-side Darlington
+//    saturation drop (Vce_sat_low ≈ 0.9V - 1.2V depending on collector current).
+// 4. Thus, (V_bus / I_a) includes motor Ra + low-side switch resistance + cable losses.
+//    The value is labeled as ESTIMATED_UNCALIBRATED until differential sensing is calibrated.
+// =============================================================================
 void executeRaPulseTest() {
   if (!s_driver_armed) {
     Serial.println("ERR:DRIVER_DISARMED:ENABLE_DRIVER_FIRST");
@@ -256,10 +266,11 @@ void executeRaPulseTest() {
   setMotorDuty(0);
   delay(150);
 
-  // Apply calibrated pulse (60ms @ 40% duty)
+  // Apply calibrated short pulse (60ms @ 40% duty)
   setMotorDuty(102, true);
 
-  float v_sum = 0.0f;
+  float v_bus_sum = 0.0f;
+  float v_shunt_sum = 0.0f;
   float i_sum = 0.0f;
   int valid_samples = 0;
 
@@ -268,10 +279,12 @@ void executeRaPulseTest() {
   while (millis() - pulse_start < 60) {
     if (millis() - pulse_start >= 20) {
       if (s_ina_online) {
-        float v = ina219.getBusVoltage_V();
+        float v_b = ina219.getBusVoltage_V();
+        float v_s = ina219.getShuntVoltage_mV();
         float i = ina219.getCurrent_mA();
         if (i > 30.0f) {
-          v_sum += v;
+          v_bus_sum += v_b;
+          v_shunt_sum += v_s;
           i_sum += i;
           valid_samples++;
         }
@@ -280,14 +293,21 @@ void executeRaPulseTest() {
     }
   }
 
-  // Terminate pulse
+  // Terminate pulse immediately to avoid rotor movement
   setMotorDuty(0);
 
-  float v_avg = valid_samples > 0 ? (v_sum / valid_samples) : 12.0f;
+  float v_bus_avg = valid_samples > 0 ? (v_bus_sum / valid_samples) : 12.0f;
+  float v_shunt_avg = valid_samples > 0 ? (v_shunt_sum / valid_samples) : 0.0f;
+  float v_in_plus_avg = v_bus_avg + (v_shunt_avg / 1000.0f);
   float i_avg = valid_samples > 0 ? (i_sum / valid_samples) : 0.0f;
-  float ra_calc = (i_avg > 30.0f) ? (v_avg / (i_avg / 1000.0f)) : 0.0f;
 
-  Serial.printf("ACK:MEASURE_RA:V=%.2f,I=%.1f,Ra=%.3f\r\n", v_avg, i_avg, ra_calc);
+  // Theoretical motor voltage estimation: subtract typical L298N low-side saturation drop (~1.0V)
+  // if voltage is sufficient, else fall back to raw bus ratio
+  float v_est_motor = (v_bus_avg > 1.2f) ? (v_bus_avg - 1.0f) : v_bus_avg;
+  float ra_calc = (i_avg > 30.0f) ? (v_est_motor / (i_avg / 1000.0f)) : 0.0f;
+
+  Serial.printf("ACK:MEASURE_RA:V_bus=%.2f,V_in+=%.2f,I=%.1f,Ra=%.3f,note=ESTIMATED_UNCALIBRATED\r\n",
+                v_bus_avg, v_in_plus_avg, i_avg, ra_calc);
 }
 
 // =============================================================================
