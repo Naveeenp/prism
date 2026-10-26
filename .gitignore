@@ -76,12 +76,14 @@ venv.bak/
 *.hex
 *.bin
 *.elf
+*.uf2
 *.eep
 *.lst
 *.map
 .pio/
 .pioenvs/
 .piolibdeps/
+tools/
 
 # Operating System files
 .DS_Store

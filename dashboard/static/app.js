@@ -1,579 +1,485 @@
-/**
- * ==============================================================================
- * DC MOTOR HEALTH MONITOR - CLIENT APPLICATION CONTROLLER (app.js)
- * Clean, modern, uncluttered UI logic with Web Audio alerts and fault lab.
- * ==============================================================================
- */
+/* ==============================================================================
+   INDUSTRIAL SCADA JAVASCRIPT CONTROLLER - PMDC MOTOR DIAGNOSTIC BENCH
+   Features:
+     - 10 Hz Real-Time SSE Ingestion with REST Fallback
+     - High-Performance HTML5 Canvas 2D Strip Charts (Zero External Chart Libs)
+     - Deceleration Slope Marker Rendering During Coast Test
+     - Chronological Alarm & Event Ledger Synchronization
+   ============================================================================== */
 
-// Global State
-let currentSource = "SIMULATION"; // "SIMULATION" or "HARDWARE"
-let isPicoConnected = false;
-let eventSource = null;
-let lastPacketTime = performance.now();
-let packetCounter = 0;
-let packetsThisSec = 0;
-let lastRateCheck = performance.now();
+let isConnected = false;
+let heartbeatToggle = false;
+let sseSource = null;
 
-// Active Injected Faults Cache
-let activeFaults = {
-  overheat: false,
-  overcurrent: false,
-  vibration: false,
-  stall: false,
-  bearing_drag: false,
-  voltage_drop: false
-};
-
-// Web Audio API Alert Engine
-let audioContext = null;
-let isAudioMuted = false;
-let lastAlertChimeTime = 0;
-
-// Automated Test Sequence State
-let testCycleActive = false;
-let testCycleTimer = null;
-let testCycleStep = 0;
-const TEST_STEPS = [
-  { speed: 0, timeMs: 3000 },
-  { speed: 30, timeMs: 4000 },
-  { speed: 70, timeMs: 5000 },
-  { speed: 100, timeMs: 4000 },
-  { speed: 0, timeMs: 4500 }
-];
-
-// Rolling History for Strip Charts (120 samples ~ 12 seconds)
-const CHART_CAPACITY = 120;
-const telemetryHistory = {
+// Telemetry Buffers for Real-Time Charts (120 points = 12 seconds window @ 10 Hz)
+const MAX_POINTS = 120;
+const chartBuffers = {
+  time: [],
   rpm: [],
   current: [],
-  vib: [],
-  temp: []
+  vibration: []
 };
 
-// ==============================================================================
-// 1. INITIALIZATION & LIFECYCLE
-// ==============================================================================
-document.addEventListener("DOMContentLoaded", () => {
-  // Load saved mute preference
-  const savedMute = localStorage.getItem("scada_audio_muted");
-  if (savedMute === "true") {
-    isAudioMuted = true;
-    updateAudioButtonUI();
-  }
+let coastSlopeMarkers = [];
 
-  // Initialize Canvas DPI scaling
-  initCanvasScaling();
-  window.addEventListener("resize", initCanvasScaling);
-
-  // Scan COM ports
-  refreshSerialPorts();
-
-  // Connect to live telemetry stream (SSE)
-  connectTelemetryStream();
-
-  // Start continuous 60fps chart rendering loop
-  requestAnimationFrame(drawChartsLoop);
+// =============================================================================
+// INITIALIZATION
+// =============================================================================
+window.addEventListener("DOMContentLoaded", () => {
+  initCanvases();
+  refreshPorts();
+  startEventSource();
+  setInterval(pollAlarms, 1000);
 });
 
-// ==============================================================================
-// 2. WEB AUDIO ALERT ENGINE
-// ==============================================================================
-function initAudio() {
-  if (!audioContext) {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (AudioCtx) {
-      audioContext = new AudioCtx();
-    }
-  }
-  if (audioContext && audioContext.state === "suspended") {
-    audioContext.resume();
-  }
-}
+// =============================================================================
+// API & SERIAL CONNECTION CONTROLS
+// =============================================================================
+async function refreshPorts() {
+  try {
+    const res = await fetch("/api/ports");
+    const data = await res.json();
+    const sel = document.getElementById("portSelect");
+    sel.innerHTML = "";
 
-function playWarningChime() {
-  if (isAudioMuted) return;
-  initAudio();
-  if (!audioContext) return;
-
-  const now = audioContext.currentTime;
-
-  // Synthesize clean two-tone alert chime (880 Hz -> 587 Hz)
-  const osc = audioContext.createOscillator();
-  const gain = audioContext.createGain();
-
-  osc.type = "sine";
-  osc.frequency.setValueAtTime(880, now); // A5 note
-  osc.frequency.setValueAtTime(587.33, now + 0.15); // D5 note
-
-  gain.gain.setValueAtTime(0.001, now);
-  gain.gain.exponentialRampToValueAtTime(0.25, now + 0.03);
-  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
-
-  osc.connect(gain);
-  gain.connect(audioContext.destination);
-
-  osc.start(now);
-  osc.stop(now + 0.46);
-}
-
-function toggleAudioAlerts() {
-  initAudio();
-  isAudioMuted = !isAudioMuted;
-  localStorage.setItem("scada_audio_muted", isAudioMuted);
-  updateAudioButtonUI();
-
-  if (!isAudioMuted) {
-    playWarningChime(); // Test beep on unmute
-  }
-}
-
-function updateAudioButtonUI() {
-  const btn = document.getElementById("btnAudioToggle");
-  const icon = document.getElementById("audioIcon");
-  const text = document.getElementById("audioText");
-
-  if (isAudioMuted) {
-    btn.classList.add("muted");
-    icon.textContent = "🔇";
-    text.textContent = "Alert Audio: MUTED";
-  } else {
-    btn.classList.remove("muted");
-    icon.textContent = "🔊";
-    text.textContent = "Alert Audio: ON";
-  }
-}
-
-// ==============================================================================
-// 3. SERVER-SENT EVENTS (SSE) STREAM
-// ==============================================================================
-function connectTelemetryStream() {
-  if (eventSource) {
-    eventSource.close();
-  }
-
-  eventSource = new EventSource("/api/telemetry/stream");
-
-  eventSource.onmessage = (event) => {
-    try {
-      const telem = JSON.parse(event.data);
-      handleTelemetryPacket(telem);
-    } catch (err) {
-      console.error("Packet parse error:", err);
-    }
-  };
-
-  eventSource.onerror = () => {
-    document.getElementById("statusBadge").textContent = "RECONNECTING";
-  };
-}
-
-// ==============================================================================
-// 4. TELEMETRY PROCESSING & PLAIN-ENGLISH WARNING RENDERING
-// ==============================================================================
-function handleTelemetryPacket(data) {
-  packetCounter++;
-  packetsThisSec++;
-
-  const nowPerf = performance.now();
-  if (nowPerf - lastRateCheck >= 1000) {
-    const rate = (packetsThisSec / ((nowPerf - lastRateCheck) / 1000)).toFixed(0);
-    document.getElementById("valPacketRate").textContent = `${rate} Hz`;
-    packetsThisSec = 0;
-    lastRateCheck = nowPerf;
-  }
-
-  // 1. Update Primary Metrics
-  document.getElementById("valRpm").textContent = Math.round(data.rpm).toLocaleString();
-  document.getElementById("valPwm").textContent = `${Math.round(data.pwm_pct)}%`;
-  
-  const omega = (data.rpm * (2 * Math.PI / 60)).toFixed(1);
-  document.getElementById("valOmega").textContent = omega;
-
-  document.getElementById("valCurrent").textContent = Math.round(data.curr_ma);
-  const powerW = (data.power_mw / 1000.0).toFixed(1);
-  document.getElementById("valPower").textContent = `${powerW} W`;
-
-  document.getElementById("valTemp").textContent = data.temp_c.toFixed(1);
-  document.getElementById("valVib").textContent = data.vib_rms_g.toFixed(2);
-
-  // Secondary metrics
-  document.getElementById("valVoltage").textContent = `${data.volts.toFixed(2)} V`;
-  const sag = (12.0 - data.volts).toFixed(2);
-  document.getElementById("valSag").textContent = `${sag > 0 ? sag : "0.00"} V`;
-  document.getElementById("valDecel").textContent = `${data.decel_rad_s2.toFixed(1)} rad/s²`;
-
-  // 2. Human-Readable Health Status & Warnings
-  updateHealthStatusAndWarnings(data);
-
-  // 3. Sync Injected Fault Button States
-  if (data.faults_injected) {
-    syncFaultButtonStyles(data.faults_injected);
-  }
-
-  // 4. Append to Rolling Chart Buffers
-  telemetryHistory.rpm.push(data.rpm);
-  telemetryHistory.current.push(data.curr_ma);
-  telemetryHistory.vib.push(data.vib_rms_g);
-  telemetryHistory.temp.push(data.temp_c);
-
-  if (telemetryHistory.rpm.length > CHART_CAPACITY) {
-    telemetryHistory.rpm.shift();
-    telemetryHistory.current.shift();
-    telemetryHistory.vib.shift();
-    telemetryHistory.temp.shift();
-  }
-}
-
-function updateHealthStatusAndWarnings(data) {
-  const banner = document.getElementById("statusBanner");
-  const badge = document.getElementById("statusBadge");
-  const summary = document.getElementById("statusSummary");
-  const warningsContainer = document.getElementById("warningItemsContainer");
-
-  const warnings = data.warnings || [];
-  const hasCritical = warnings.some(w => w.severity === "CRITICAL");
-  const hasWarning = warnings.length > 0 && !hasCritical;
-
-  // Card Alert Borders
-  const alarms = data.alarms || {};
-  document.getElementById("cardTemp").classList.toggle("alert-state", alarms.overtemp);
-  document.getElementById("cardCurrent").classList.toggle("alert-state", alarms.overcurrent);
-  document.getElementById("cardVib").classList.toggle("alert-state", alarms.vibration);
-  document.getElementById("cardSpeed").classList.toggle("alert-state", alarms.stall);
-
-  if (hasCritical) {
-    banner.className = "status-banner state-alarm";
-    badge.textContent = "CRITICAL ALERT";
-    summary.textContent = "Immediate attention required: Critical threshold exceeded.";
-    warningsContainer.style.display = "flex";
-
-    // Trigger Audible Alert Chime (throttled every 3.5 seconds)
-    const now = performance.now();
-    if (now - lastAlertChimeTime >= 3500) {
-      playWarningChime();
-      lastAlertChimeTime = now;
-    }
-  } else if (hasWarning) {
-    banner.className = "status-banner state-warning";
-    badge.textContent = "WARNING";
-    summary.textContent = "Motor operating with elevated parameters.";
-    warningsContainer.style.display = "flex";
-  } else {
-    banner.className = "status-banner";
-    badge.textContent = "HEALTHY";
-    summary.textContent = "All systems operating normally within nominal safety thresholds.";
-    warningsContainer.style.display = "none";
-    warningsContainer.innerHTML = "";
-    return;
-  }
-
-  // Render clear plain-English warning cards
-  warningsContainer.innerHTML = "";
-  warnings.forEach(w => {
-    const card = document.createElement("div");
-    card.className = `warning-card ${w.severity.toLowerCase()}`;
-
-    const icon = w.severity === "CRITICAL" ? "🛑" : "⚠️";
-    card.innerHTML = `
-      <div class="warning-icon">${icon}</div>
-      <div class="warning-text">
-        <div class="warning-title">${w.title}</div>
-        <div class="warning-desc">${w.message}</div>
-      </div>
-    `;
-    warningsContainer.appendChild(card);
-  });
-}
-
-// ==============================================================================
-// 5. INTERACTIVE SIMULATION FAULT INJECTION LAB
-// ==============================================================================
-function toggleFault(faultName) {
-  activeFaults[faultName] = !activeFaults[faultName];
-
-  fetch("/api/simulation/faults", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [faultName]: activeFaults[faultName] })
-  })
-  .then(res => res.json())
-  .then(() => {
-    updateFaultButtonState(faultName, activeFaults[faultName]);
-  })
-  .catch(err => console.error("Fault toggle error:", err));
-}
-
-function resetAllFaults() {
-  fetch("/api/simulation/reset", { method: "POST" })
-    .then(res => res.json())
-    .then(() => {
-      for (const k in activeFaults) {
-        activeFaults[k] = false;
-        updateFaultButtonState(k, false);
-      }
-    });
-}
-
-function updateFaultButtonState(faultName, isActive) {
-  const map = {
-    overheat: "btnFaultOverheat",
-    overcurrent: "btnFaultOvercurrent",
-    vibration: "btnFaultVib",
-    stall: "btnFaultStall",
-    bearing_drag: "btnFaultBearing",
-    voltage_drop: "btnFaultVoltage"
-  };
-  const btnId = map[faultName];
-  if (btnId) {
-    const el = document.getElementById(btnId);
-    if (el) el.classList.toggle("active", Boolean(isActive));
-  }
-}
-
-function syncFaultButtonStyles(faultsObj) {
-  for (const k in faultsObj) {
-    activeFaults[k] = Boolean(faultsObj[k]);
-    updateFaultButtonState(k, activeFaults[k]);
-  }
-}
-
-// ==============================================================================
-// 6. SOURCE SWITCHER & HARDWARE SERIAL
-// ==============================================================================
-function selectDataSource(source) {
-  currentSource = source;
-  document.getElementById("tabSim").classList.toggle("active", source === "SIMULATION");
-  document.getElementById("tabHw").classList.toggle("active", source === "HARDWARE");
-
-  const drawer = document.getElementById("hwDrawer");
-  if (source === "HARDWARE") {
-    drawer.style.display = "block";
-    refreshSerialPorts();
-  } else {
-    drawer.style.display = "none";
-  }
-
-  fetch("/api/mode", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: source })
-  })
-  .then(res => res.json())
-  .then(resp => {
-    if (source === "HARDWARE") {
-      isPicoConnected = resp.success;
-      updatePicoConnectButton();
-    }
-  });
-}
-
-function refreshSerialPorts() {
-  fetch("/api/ports")
-    .then(res => res.json())
-    .then(data => {
-      const select = document.getElementById("comPortSelect");
-      select.innerHTML = "";
-      if (data.ports && data.ports.length > 0) {
-        data.ports.forEach(p => {
-          const opt = document.createElement("option");
-          opt.value = p.device;
-          opt.textContent = `${p.device} (${p.description || "Serial Device"})`;
-          if (p.device === data.current_port) opt.selected = true;
-          select.appendChild(opt);
-        });
-      } else {
+    if (data.ports && data.ports.length > 0) {
+      data.ports.forEach(p => {
         const opt = document.createElement("option");
-        opt.value = "COM3";
-        opt.textContent = "COM3 (Raspberry Pi Pico)";
-        select.appendChild(opt);
-      }
-    });
+        opt.value = p.device;
+        opt.textContent = `${p.device} (${p.description || "ESP32"})`;
+        sel.appendChild(opt);
+      });
+    } else {
+      const opt = document.createElement("option");
+      opt.value = "COM3";
+      opt.textContent = "COM3 (Simulated / Offline)";
+      sel.appendChild(opt);
+    }
+
+    updateConnectionUI(data.connected);
+  } catch (e) {
+    console.warn("Could not fetch ports:", e);
+  }
 }
 
-function toggleHardwareConnection() {
-  const port = document.getElementById("comPortSelect").value;
+async function toggleConnection() {
+  const port = document.getElementById("portSelect").value;
   const baud = document.getElementById("baudSelect").value;
 
-  if (isPicoConnected) {
-    fetch("/api/serial/disconnect", { method: "POST" })
-      .then(res => res.json())
-      .then(() => {
-        isPicoConnected = false;
-        updatePicoConnectButton();
+  if (!isConnected) {
+    try {
+      const res = await fetch("/api/serial/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ port, baudrate: parseInt(baud, 10) })
       });
+      const data = await res.json();
+      updateConnectionUI(data.success);
+    } catch (e) {
+      alert("Failed to connect: " + e);
+    }
   } else {
-    fetch("/api/serial/connect", {
+    try {
+      await fetch("/api/serial/disconnect", { method: "POST" });
+      updateConnectionUI(false);
+    } catch (e) {
+      console.warn("Disconnect error:", e);
+    }
+  }
+}
+
+function updateConnectionUI(connected) {
+  isConnected = connected;
+  const btn = document.getElementById("btnConnect");
+  if (connected) {
+    btn.textContent = "DISCONNECT";
+    btn.classList.add("connected");
+  } else {
+    btn.textContent = "CONNECT";
+    btn.classList.remove("connected");
+  }
+}
+
+let driverPowerActive = false;
+
+// =============================================================================
+// OPERATING COMMAND DISPATCHERS
+// =============================================================================
+async function toggleDriverPower() {
+  const targetState = !driverPowerActive;
+  try {
+    const res = await fetch("/api/control", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ port: port, baudrate: parseInt(baud) })
-    })
-    .then(res => res.json())
-    .then(resp => {
-      isPicoConnected = resp.success;
-      updatePicoConnectButton();
+      body: JSON.stringify({ action: "driver_power", enable: targetState })
     });
+    const data = await res.json();
+    if (data.success) {
+      updateDriverPowerUI(targetState);
+    }
+  } catch (e) {
+    console.error("Driver power toggle error:", e);
   }
 }
 
-function updatePicoConnectButton() {
-  const btn = document.getElementById("btnConnect");
-  const pill = document.getElementById("connStatusPill");
+function updateDriverPowerUI(active) {
+  driverPowerActive = active;
+  const btn = document.getElementById("btnDriverPwr");
+  const badge = document.getElementById("badgeDriverPwr");
 
-  if (isPicoConnected) {
-    btn.textContent = "Disconnect Pico";
-    btn.classList.add("connected");
-    pill.textContent = "Connected (Online)";
-    pill.className = "connection-status-pill online";
+  if (!btn || !badge) return;
+
+  if (active) {
+    btn.textContent = "DISABLE MOTOR DRIVER (POWER OFF)";
+    btn.classList.add("driver-active");
+    badge.textContent = "ARMED / ON";
+    badge.className = "pwr-status-badge badge-on";
   } else {
-    btn.textContent = "Connect to Pico";
-    btn.classList.remove("connected");
-    pill.textContent = "Offline";
-    pill.className = "connection-status-pill";
+    btn.textContent = "ENABLE MOTOR DRIVER (ARM POWER)";
+    btn.classList.remove("driver-active");
+    badge.textContent = "DISARMED";
+    badge.className = "pwr-status-badge badge-off";
   }
 }
 
-// ==============================================================================
-// 7. MOTOR DRIVE CONTROLLER
-// ==============================================================================
-function updateSliderBadge(val) {
-  document.getElementById("sliderValBadge").textContent = `${val}%`;
+async function setSpeed(pct) {
+  try {
+    await fetch("/api/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "set_speed", speed: pct })
+    });
+  } catch (e) {
+    console.error("Speed command error:", e);
+  }
 }
 
-function applySpeed(speed) {
-  document.getElementById("speedSlider").value = speed;
-  updateSliderBadge(speed);
-
-  fetch("/api/control", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "set_speed", speed: parseFloat(speed) })
-  });
+async function sendEStop() {
+  try {
+    await fetch("/api/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "stop" })
+    });
+  } catch (e) {
+    console.error("E-STOP error:", e);
+  }
 }
 
-function triggerEmergencyStop() {
-  if (testCycleActive) toggleTestCycle();
-
-  document.getElementById("speedSlider").value = 0;
-  updateSliderBadge(0);
-
-  fetch("/api/control", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "stop" })
-  });
+async function triggerRaTest() {
+  try {
+    await fetch("/api/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "ra_test" })
+    });
+  } catch (e) {
+    console.error("Ra test trigger error:", e);
+  }
 }
 
-function toggleTestCycle() {
-  testCycleActive = !testCycleActive;
-  const btn = document.getElementById("btnTestCycle");
+async function triggerCoastTest() {
+  try {
+    await fetch("/api/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "coast_test" })
+    });
+  } catch (e) {
+    console.error("Coast test trigger error:", e);
+  }
+}
 
-  if (testCycleActive) {
-    btn.textContent = "Halt Test Cycle";
-    btn.classList.add("active");
-    testCycleStep = 0;
-    runNextTestStep();
+// =============================================================================
+// SSE REAL-TIME TELEMETRY CONSUMER
+// =============================================================================
+function startEventSource() {
+  if (!!window.EventSource) {
+    sseSource = new EventSource("/api/telemetry/stream");
+    sseSource.onmessage = (e) => {
+      try {
+        const packet = JSON.parse(e.data);
+        handleTelemetryUpdate(packet);
+      } catch (err) {
+        console.error("SSE parse error:", err);
+      }
+    };
+    sseSource.onerror = () => {
+      // Reconnect automatically
+    };
   } else {
-    btn.textContent = "Start Automated Test Cycle";
-    btn.classList.remove("active");
-    if (testCycleTimer) clearTimeout(testCycleTimer);
+    // 10 Hz Polling fallback
+    setInterval(async () => {
+      try {
+        const res = await fetch("/api/telemetry");
+        const packet = await res.json();
+        handleTelemetryUpdate(packet);
+      } catch (e) {}
+    }, 100);
   }
 }
 
-function runNextTestStep() {
-  if (!testCycleActive) return;
+function handleTelemetryUpdate(t) {
+  // 1. Toggle Heartbeat Indicator
+  heartbeatToggle = !heartbeatToggle;
+  const hbLed = document.getElementById("heartbeatLed");
+  if (heartbeatToggle) {
+    hbLed.classList.add("active");
+  } else {
+    hbLed.classList.remove("active");
+  }
 
-  const step = TEST_STEPS[testCycleStep];
-  applySpeed(step.speed);
+  // Sync Driver Power UI if reported in telemetry
+  if (t.driver_pwr !== undefined && t.driver_pwr !== (driverPowerActive ? 1 : 0)) {
+    updateDriverPowerUI(Boolean(t.driver_pwr));
+  }
 
-  testCycleStep = (testCycleStep + 1) % TEST_STEPS.length;
-  testCycleTimer = setTimeout(runNextTestStep, step.timeMs);
+  // 2. Update Digital Metric Readouts
+  document.getElementById("valVBus").textContent = (t.v_bus || 0).toFixed(2);
+  document.getElementById("valIMa").textContent = (t.i_ma || 0).toFixed(1);
+  document.getElementById("valRpm").textContent = (t.rpm || 0).toFixed(1);
+  document.getElementById("valTemp").textContent = (t.temp_c || 0).toFixed(1);
+  document.getElementById("valVib").textContent = (t.vib_g || 0).toFixed(3);
+  document.getElementById("valRa").textContent = (t.ra_ohms || 2.40).toFixed(2);
+  document.getElementById("valCoast").textContent = (t.coast_duration_s || 0.0).toFixed(2);
+
+  const bciElem = document.getElementById("valBci");
+  const bciVal = (t.bci_pct !== undefined ? t.bci_pct : 100.0);
+  bciElem.textContent = bciVal.toFixed(1);
+
+  if (bciVal < 60.0) {
+    bciElem.style.color = "#F44336";
+  } else if (bciVal < 85.0) {
+    bciElem.style.color = "#FFC107";
+  } else {
+    bciElem.style.color = "#4CAF50";
+  }
+
+  // 3. Update Chart Buffers
+  coastSlopeMarkers = t.slope_markers || [];
+  appendChartData(t.rpm || 0, t.i_ma || 0, t.vib_g || 0);
+
+  // 4. Redraw Strip Charts
+  renderChartSpeed();
+  renderChartElectVib();
 }
 
-// ==============================================================================
-// 8. 60FPS DUAL CANVAS STRIP CHARTS
-// ==============================================================================
-let chartCanvases = {};
-let chartContexts = {};
+function appendChartData(rpm, current, vibration) {
+  chartBuffers.rpm.push(rpm);
+  chartBuffers.current.push(current);
+  chartBuffers.vibration.push(vibration * 400.0); // Scaled for dual-trace visibility
 
-function initCanvasScaling() {
-  const ids = ["canvasRpm", "canvasCurrent", "canvasVib", "canvasTemp"];
-  const dpr = window.devicePixelRatio || 1;
+  if (chartBuffers.rpm.length > MAX_POINTS) {
+    chartBuffers.rpm.shift();
+    chartBuffers.current.shift();
+    chartBuffers.vibration.shift();
+  }
+}
 
-  ids.forEach(id => {
-    const cvs = document.getElementById(id);
-    if (!cvs) return;
-    const rect = cvs.getBoundingClientRect();
-    cvs.width = rect.width * dpr;
-    cvs.height = rect.height * dpr;
-    const ctx = cvs.getContext("2d");
-    ctx.scale(dpr, dpr);
-    chartCanvases[id] = cvs;
-    chartContexts[id] = ctx;
+// =============================================================================
+// ALARM LEDGER LOG AUDIT TRAIL
+// =============================================================================
+async function pollAlarms() {
+  try {
+    const res = await fetch("/api/logs");
+    const data = await res.json();
+    if (data.logs) {
+      renderAlarmLedger(data.logs);
+    }
+  } catch (e) {}
+}
+
+function renderAlarmLedger(logs) {
+  const tbody = document.getElementById("alarmTbody");
+  tbody.innerHTML = "";
+
+  logs.forEach(ev => {
+    const row = document.createElement("tr");
+
+    const tdTime = document.createElement("td");
+    tdTime.textContent = ev.timestamp;
+    row.appendChild(tdTime);
+
+    const tdSev = document.createElement("td");
+    tdSev.textContent = ev.severity;
+    tdSev.className = `severity-${ev.severity}`;
+    tdSev.style.textAlign = "center";
+    row.appendChild(tdSev);
+
+    const tdParam = document.createElement("td");
+    tdParam.textContent = ev.parameter;
+    row.appendChild(tdParam);
+
+    const tdCond = document.createElement("td");
+    tdCond.textContent = ev.condition;
+    row.appendChild(tdCond);
+
+    tbody.appendChild(row);
   });
 }
 
-function drawChartsLoop() {
-  drawStrip("canvasRpm", telemetryHistory.rpm, 0, 3200, "#38bdf8", null);
-  drawStrip("canvasCurrent", telemetryHistory.current, 0, 1200, "#f59e0b", 900);
-  drawStrip("canvasVib", telemetryHistory.vib, 0, 3.0, "#fb923c", 1.80);
-  drawStrip("canvasTemp", telemetryHistory.temp, 20, 65, "#f87171", 50.0);
+// =============================================================================
+// HTML5 CANVAS STRIP CHART RENDERING ENGINE
+// =============================================================================
+let canvasSpeed, ctxSpeed, canvasElect, ctxElect;
 
-  requestAnimationFrame(drawChartsLoop);
+function initCanvases() {
+  canvasSpeed = document.getElementById("chartSpeed");
+  ctxSpeed = canvasSpeed.getContext("2d");
+  canvasElect = document.getElementById("chartElectVib");
+  ctxElect = canvasElect.getContext("2d");
+
+  resizeCanvases();
+  window.addEventListener("resize", resizeCanvases);
 }
 
-function drawStrip(canvasId, series, minY, maxY, color, thresholdVal) {
-  const cvs = chartCanvases[canvasId];
-  const ctx = chartContexts[canvasId];
-  if (!cvs || !ctx) return;
+function resizeCanvases() {
+  const rect1 = canvasSpeed.getBoundingClientRect();
+  canvasSpeed.width = rect1.width;
+  canvasSpeed.height = 150;
 
-  const w = cvs.getBoundingClientRect().width;
-  const h = cvs.getBoundingClientRect().height;
+  const rect2 = canvasElect.getBoundingClientRect();
+  canvasElect.width = rect2.width;
+  canvasElect.height = 150;
 
-  // Clear background
-  ctx.fillStyle = "#090d16";
+  renderChartSpeed();
+  renderChartElectVib();
+}
+
+function drawGrid(ctx, w, h, yMin, yMax, unit) {
+  ctx.fillStyle = "#0F0F0F";
   ctx.fillRect(0, 0, w, h);
 
-  // Subtle grid lines
-  ctx.strokeStyle = "#162133";
+  const padLeft = 45;
+  const padRight = 10;
+  const padTop = 15;
+  const padBottom = 20;
+  const plotW = w - padLeft - padRight;
+  const plotH = h - padTop - padBottom;
+
+  ctx.strokeStyle = "#2D2D2D";
   ctx.lineWidth = 1;
-  const divs = 3;
-  for (let i = 0; i <= divs; i++) {
-    const y = (h / divs) * i;
+  ctx.setLineDash([2, 4]);
+
+  // Horizontal ticks
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i++) {
+    const yVal = yMin + (i / ticks) * (yMax - yMin);
+    const py = padTop + plotH - (i / ticks) * plotH;
+
     ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(w, y);
+    ctx.moveTo(padLeft, py);
+    ctx.lineTo(padLeft + plotW, py);
+    ctx.stroke();
+
+    ctx.fillStyle = "#8A8A8A";
+    ctx.font = "9px Consolas, monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(yVal.toFixed(0), padLeft - 6, py + 3);
+  }
+
+  // Vertical ticks
+  for (let j = 1; j <= 5; j++) {
+    const px = padLeft + (j / 6) * plotW;
+    ctx.beginPath();
+    ctx.moveTo(px, padTop);
+    ctx.lineTo(px, padTop + plotH);
     ctx.stroke();
   }
 
-  // Draw Alarm Threshold Line if set
-  if (thresholdVal !== null) {
-    const threshY = h - ((thresholdVal - minY) / (maxY - minY)) * h;
-    ctx.strokeStyle = "rgba(239, 68, 68, 0.6)";
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(0, threshY);
-    ctx.lineTo(w, threshY);
-    ctx.stroke();
-    ctx.setLineDash([]);
+  ctx.setLineDash([]);
+  return { padLeft, padRight, padTop, padBottom, plotW, plotH };
+}
+
+function renderChartSpeed() {
+  if (!ctxSpeed) return;
+  const w = canvasSpeed.width;
+  const h = canvasSpeed.height;
+  const yMin = 0;
+  const yMax = 2500;
+
+  const { padLeft, padTop, plotW, plotH } = drawGrid(ctxSpeed, w, h, yMin, yMax, "RPM");
+
+  const buf = chartBuffers.rpm;
+  if (buf.length < 2) return;
+
+  const dx = plotW / (MAX_POINTS - 1);
+  const xOffset = padLeft + (MAX_POINTS - buf.length) * dx;
+
+  // Draw Speed Trace
+  ctxSpeed.strokeStyle = "#00E5FF";
+  ctxSpeed.lineWidth = 2;
+  ctxSpeed.beginPath();
+
+  for (let i = 0; i < buf.length; i++) {
+    const px = xOffset + i * dx;
+    const py = padTop + plotH - (Math.max(0, Math.min(yMax, buf[i])) / (yMax - yMin)) * plotH;
+    if (i === 0) ctxSpeed.moveTo(px, py);
+    else ctxSpeed.lineTo(px, py);
   }
+  ctxSpeed.stroke();
 
-  if (series.length < 2) return;
+  // Draw Deceleration Slope Annotation Markers if test active
+  if (coastSlopeMarkers.length >= 2) {
+    ctxSpeed.strokeStyle = "#FF5252";
+    ctxSpeed.lineWidth = 2;
+    ctxSpeed.setLineDash([4, 2]);
 
-  // Draw Line
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 2.0;
-  ctx.beginPath();
+    const p1x = padLeft + plotW - 45;
+    const p2x = padLeft + plotW - 10;
+    const p1y = padTop + 20;
+    const p2y = padTop + plotH - 10;
 
-  const stepX = w / (CHART_CAPACITY - 1);
-  const offset = CHART_CAPACITY - series.length;
+    ctxSpeed.beginPath();
+    ctxSpeed.moveTo(p1x, p1y);
+    ctxSpeed.lineTo(p2x, p2y);
+    ctxSpeed.stroke();
+    ctxSpeed.setLineDash([]);
 
-  for (let i = 0; i < series.length; i++) {
-    const x = (offset + i) * stepX;
-    const clamped = Math.max(minY, Math.min(maxY, series[i]));
-    const y = h - ((clamped - minY) / (maxY - minY)) * h;
-
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+    ctxSpeed.fillStyle = "#FF5252";
+    ctxSpeed.font = "9px Consolas, monospace";
+    ctxSpeed.textAlign = "right";
+    ctxSpeed.fillText("dω/dt FIT", p1x - 6, p1y + 12);
   }
-  ctx.stroke();
+}
+
+function renderChartElectVib() {
+  if (!ctxElect) return;
+  const w = canvasElect.width;
+  const h = canvasElect.height;
+  const yMin = 0;
+  const yMax = 1000;
+
+  const { padLeft, padTop, plotW, plotH } = drawGrid(ctxElect, w, h, yMin, yMax, "mA");
+
+  const curBuf = chartBuffers.current;
+  const vibBuf = chartBuffers.vibration;
+  if (curBuf.length < 2) return;
+
+  const dx = plotW / (MAX_POINTS - 1);
+  const xOffset = padLeft + (MAX_POINTS - curBuf.length) * dx;
+
+  // 1. Draw Current Trace (#FFB300)
+  ctxElect.strokeStyle = "#FFB300";
+  ctxElect.lineWidth = 1.5;
+  ctxElect.beginPath();
+  for (let i = 0; i < curBuf.length; i++) {
+    const px = xOffset + i * dx;
+    const py = padTop + plotH - (Math.max(0, Math.min(yMax, curBuf[i])) / (yMax - yMin)) * plotH;
+    if (i === 0) ctxElect.moveTo(px, py);
+    else ctxElect.lineTo(px, py);
+  }
+  ctxElect.stroke();
+
+  // 2. Draw Scaled Vibration Trace (#E040FB)
+  ctxElect.strokeStyle = "#E040FB";
+  ctxElect.lineWidth = 1.5;
+  ctxElect.beginPath();
+  for (let j = 0; j < vibBuf.length; j++) {
+    const px = xOffset + j * dx;
+    const py = padTop + plotH - (Math.max(0, Math.min(yMax, vibBuf[j])) / (yMax - yMin)) * plotH;
+    if (j === 0) ctxElect.moveTo(px, py);
+    else ctxElect.lineTo(px, py);
+  }
+  ctxElect.stroke();
 }

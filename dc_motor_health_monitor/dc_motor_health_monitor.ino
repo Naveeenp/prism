@@ -1,35 +1,34 @@
 /*
  ===============================================================================
- DC MOTOR REAL-TIME PREDICTIVE HEALTH DIAGNOSTIC SYSTEM
+ PMDC MOTOR HEALTH DIAGNOSTIC TEST BENCH - EMBEDDED FIRMWARE (ESP-32S)
  ===============================================================================
- Target Microcontroller: Raspberry Pi Pico H (RP2040)
- Development Platform:   Arduino IDE (using Earle Philhower's arduino-pico core)
- Standard Libraries (Install via Arduino IDE Library Manager):
-   1. "Adafruit MPU6050"   by Adafruit (includes Adafruit_Sensor)
-   2. "Adafruit INA219"    by Adafruit
-   3. "OneWire"            by Paul Stoffregen
-   4. "DallasTemperature"  by Miles Burton
-   5. "Adafruit SH110X"    by Adafruit (For 1.3" OLED: Adafruit_SH1106G 128x64)
-      (Alternative: Adafruit_SSD1306 for 0.96" OLEDs)
+ Target Microcontroller: ESP-32S (38-Pin NodeMCU / ESP32-WROOM-32)
+ Baud Rate:             115200 Baud (Clean JSON Lines / Protocol Handshake)
+ Standards:             ISA-101 Industrial Telemetry & Machine Diagnostics
  ===============================================================================
- HARDWARE PIN CONNECTIONS (RP2040):
-   - I2C0 Bus (Shared, 400kHz):
-       * SDA = GP4 (Pico Pin 6)
-       * SCL = GP5 (Pico Pin 7)
-       * MPU-6050 (0x68), INA219 (0x40), 1.3" SH1106 OLED (0x3C)
-   - 1-Wire Bus:
-       * DATA = GP15 (Pico Pin 20) with 4.7k ohm pull-up to 3.3V
-       * Sensor: DS18B20 digital thermometer probe
-   - Optical Encoder (HC-89 / LM393):
-       * SIGNAL = GP2 (Pico Pin 4) - Hardware Falling-Edge Interrupt
-       * Disc Specification: PULSES_PER_REV = 4
+ HARDWARE PIN CONNECTIONS & L298N SPECIFICATIONS:
    - L298N Dual H-Bridge Motor Driver:
-       * ENA = GP10 (Pico Pin 14) -> 20kHz Hardware PWM Speed Control
-       * IN1 = GP11 (Pico Pin 15) -> Direction Pin 1
-       * IN2 = GP12 (Pico Pin 16) -> Direction Pin 2
+       * ENA (Speed PWM)     : GPIO 14 (Hardware LEDC PWM, 1 kHz - high torque / clean switching)
+                               NOTE: Remove the jumper on ENA to control via PWM!
+       * IN1 (Direction 1)   : GPIO 27
+       * IN2 (Direction 2)   : GPIO 26
+       * COMMON GROUND       : Connect ESP32 GND to L298N GND and Motor PSU GND!
+   - Optical Shaft Encoder (HC-89):
+       * SIGNAL (D0/OUT)     : GPIO 18 (Interrupt on FALLING, with pulse counting)
+       * Encoder Disc        : 20-Slot Disc (PULSES_PER_REV = 20)
+       * VCC                 : 3.3V or 5V (Ensure GND is shared)
+   - I2C Bus (Fast-Mode 400 kHz):
+       * SDA                 : GPIO 21
+       * SCL                 : GPIO 22
+       * Sensors on Bus      : INA219 (0x40), MPU-6050 (0x68), 1.3" SH1106 OLED (0x3C)
+   - 1-Wire Digital Thermometer:
+       * DATA                : GPIO 4 (DS18B20 with 4.7kΩ pull-up to 3.3V)
+   - Onboard Status LED:
+       * Heartbeat LED       : GPIO 2 (NodeMCU Onboard Blue LED)
  ===============================================================================
 */
 
+#include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
@@ -40,428 +39,506 @@
 #include <Adafruit_SH110X.h>
 
 // =============================================================================
-// HARDWARE PIN DEFINITIONS
+// HARDWARE PIN DEFINITIONS (ESP-32S)
 // =============================================================================
-#define PIN_I2C_SDA         4   // GP4
-#define PIN_I2C_SCL         5   // GP5
-#define PIN_ONEWIRE         15  // GP15 (DS18B20 1-Wire)
-#define PIN_ENCODER         2   // GP2  (Optical speed sensor IRQ)
-#define PIN_MOTOR_ENA       10  // GP10 (L298N PWM Speed)
-#define PIN_MOTOR_IN1       11  // GP11 (L298N Direction 1)
-#define PIN_MOTOR_IN2       12  // GP12 (L298N Direction 2)
+#define PIN_MOTOR_ENA        14  // GPIO 14: L298N PWM Speed (LEDC)
+#define PIN_MOTOR_IN1        27  // GPIO 27: L298N Direction 1
+#define PIN_MOTOR_IN2        26  // GPIO 26: L298N Direction 2
+#define PIN_ENCODER          18  // GPIO 18: HC-89 Optical Encoder IRQ
+#define PIN_I2C_SDA          21  // GPIO 21: I2C SDA
+#define PIN_I2C_SCL          22  // GPIO 22: I2C SCL
+#define PIN_ONEWIRE          4   // GPIO 4:  DS18B20 1-Wire
+#define PIN_LED_HEARTBEAT    2   // GPIO 2:  ESP32 Onboard LED
 
 // =============================================================================
-// ENCODER & MECHANICAL CONSTANTS
+// CONFIGURATION CONSTANTS
 // =============================================================================
-#define PULSES_PER_REV      4   // 4-slot DIY optical encoder disc
-#define PWM_FREQUENCY_HZ    20000 // 20 kHz ultrasonic PWM (eliminates motor whine)
-#define PWM_RESOLUTION_BITS 10    // 10-bit PWM range (0 - 1023)
+#define PULSES_PER_REV       20       // 20-slot optical encoder disc
+// 1 kHz provides high starting torque and easily passes through L298N optocouplers/buffers
+#define PWM_FREQ_HZ          1000     
+#define PWM_RESOLUTION_BITS  8        // 8-bit resolution (0 - 255)
+#define PWM_LEDC_CHANNEL     0        // LEDC Channel 0
+#define TELEMETRY_PERIOD_MS  100      // 10 Hz Telemetry Transmission Rate
 
 // =============================================================================
-// PREDICTIVE HEALTH DIAGNOSTIC THRESHOLDS
+// HARDWARE SENSOR & DISPLAY OBJECTS
 // =============================================================================
-#define FAULT_TEMP_WARN_C       45.0f
-#define FAULT_TEMP_ALARM_C      50.0f  // Casing temperature > 50.0 deg C
-#define FAULT_CURRENT_WARN_MA   750.0f
-#define FAULT_CURRENT_ALARM_MA  900.0f // Continuous current > 900 mA
-#define FAULT_VIB_WARN_G        1.40f
-#define FAULT_VIB_ALARM_G       1.80f  // Excessive RMS vibration > 1.80 g
-#define FAULT_STALL_TIME_MS     1500   // Stall: PWM >= 25% but RPM < 30 for 1.5s
-#define FAULT_DECEL_FATIGUE     -90.0f // Angular decel (rad/s^2) indicating bearing drag
+Adafruit_MPU6050      mpu;
+Adafruit_INA219       ina219(0x40);
+OneWire               oneWire(PIN_ONEWIRE);
+DallasTemperature     tempSensor(&oneWire);
+Adafruit_SH1106G      display(128, 64, &Wire, -1);
 
-#define TELEMETRY_INTERVAL_MS   200    // 5 Hz non-blocking loop
+// Sensor online detection flags
+bool s_mpu_online   = false;
+bool s_ina_online   = false;
+bool s_oled_online  = false;
 
-// =============================================================================
-// HARDWARE DRIVER INSTANCES (ARDUINO IDE ECOSYSTEM)
-// =============================================================================
-Adafruit_MPU6050   mpu;
-Adafruit_INA219    ina219(0x40);
-OneWire            oneWire(PIN_ONEWIRE);
-DallasTemperature  tempSensor(&oneWire);
-
-// 1.3-inch OLED is 128x64 driven by SH1106
-Adafruit_SH1106G   display(128, 64, &Wire, -1);
+// Driver Master Arm / Enable Switch
+bool s_driver_armed = false;
 
 // =============================================================================
-// VOLATILE INTERRUPT & TIMING STATE VARIABLES
+// VOLATILE INTERRUPT & TIMING VARIABLES
 // =============================================================================
-volatile uint32_t s_last_pulse_us = 0;
+volatile uint32_t s_last_pulse_us     = 0;
 volatile uint32_t s_pulse_interval_us = 0;
-volatile uint32_t s_pulse_counter = 0;
+volatile uint32_t s_pulse_counter_window = 0;
+volatile uint32_t s_total_pulses      = 0;
 
-float s_rpm = 0.0f;
-float s_omega_rad_s = 0.0f;
-float s_last_omega_rad_s = 0.0f;
-float s_deceleration_rad_s2 = 0.0f;
-float s_current_pwm_pct = 0.0f;
+// Motor state variables
+uint8_t  s_current_duty_8bit = 0;
+String   s_current_mode      = "STANDBY";
+float    s_rpm               = 0.0f;
+float    s_latest_temp_c     = 25.0f;
 
-// Coast-down Deceleration State
-enum CoastState { COAST_IDLE, COAST_RECORDING };
-CoastState s_coast_state = COAST_IDLE;
-uint32_t s_coast_start_us = 0;
-float s_coast_start_omega = 0.0f;
-bool s_alarm_bearing_drag = false;
+// Non-blocking timer schedulers
+uint32_t s_last_telemetry_ms = 0;
+uint32_t s_last_speed_calc_ms = 0;
+uint32_t s_last_temp_req_ms  = 0;
+uint32_t s_last_hb_toggle_ms = 0;
+bool     s_hb_led_state      = false;
 
-// Stall Detection Timer
-uint32_t s_stall_start_ms = 0;
-bool s_alarm_stall = false;
-
-// Non-blocking loop scheduler
-uint32_t s_last_telemetry_tick_ms = 0;
-uint32_t s_last_temp_req_ms = 0;
-float s_latest_temp_c = 25.0f;
-bool s_temp_conversion_pending = false;
-
-// Flag indicating if physical sensors acknowledged
-bool s_mpu_online = false;
-bool s_ina_online = false;
-bool s_oled_online = false;
+// Coast test state machine
+enum CoastTestState { COAST_STATE_IDLE, COAST_STATE_SPINUP, COAST_STATE_COASTING };
+CoastTestState s_coast_test_state = COAST_STATE_IDLE;
+uint32_t s_coast_start_ms = 0;
 
 // =============================================================================
-// OPTICAL ENCODER HARDWARE INTERRUPT SERVICE ROUTINE (FALLING EDGE)
+// OPTICAL ENCODER HARDWARE ISR (GPIO 18)
 // =============================================================================
-void encoderISR() {
+void IRAM_ATTR encoderISR() {
   uint32_t now_us = micros();
-  uint32_t delta_us = now_us - s_last_pulse_us;
+  uint32_t dt_us = now_us - s_last_pulse_us;
 
-  // Software debounce filter: discard pulses faster than 400 us (> 37,000 RPM)
-  if (delta_us > 400) {
-    s_pulse_interval_us = delta_us;
+  // Software debounce: reject pulses faster than 150 us (> 20,000 RPM)
+  if (dt_us > 150) {
+    s_pulse_interval_us = dt_us;
     s_last_pulse_us = now_us;
-    s_pulse_counter++;
+    s_pulse_counter_window++;
+    s_total_pulses++;
   }
 }
 
 // =============================================================================
-// MOTOR CONTROLLER WRAPPER FUNCTIONS (L298N)
+// MOTOR ACTUATION UTILITY (L298N VIA ESP32 LEDC)
 // =============================================================================
-void setMotorSpeed(float pct) {
-  s_current_pwm_pct = constrain(pct, 0.0f, 100.0f);
+void setMotorDuty(uint8_t duty_8bit, bool forward = true) {
+  s_current_duty_8bit = duty_8bit;
 
-  if (s_current_pwm_pct > 0.0f) {
-    digitalWrite(PIN_MOTOR_IN1, HIGH);
-    digitalWrite(PIN_MOTOR_IN2, LOW);
-    // Map 0-100% to 10-bit PWM (0 - 1023)
-    int duty = (int)((s_current_pwm_pct / 100.0f) * 1023.0f);
-    analogWrite(PIN_MOTOR_ENA, duty);
-  } else {
-    // Coast-down: PWM = 0, H-Bridge inputs low
-    analogWrite(PIN_MOTOR_ENA, 0);
+  // Safety interlock: if driver is not armed, force 0 duty and low outputs
+  if (!s_driver_armed) {
+    #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+      ledcWrite(PIN_MOTOR_ENA, 0);
+    #else
+      ledcWrite(PWM_LEDC_CHANNEL, 0);
+    #endif
     digitalWrite(PIN_MOTOR_IN1, LOW);
     digitalWrite(PIN_MOTOR_IN2, LOW);
+    s_current_mode = "DISARMED";
+    return;
+  }
+
+  if (duty_8bit > 0) {
+    // 1. Establish Direction Logic
+    if (forward) {
+      digitalWrite(PIN_MOTOR_IN1, HIGH);
+      digitalWrite(PIN_MOTOR_IN2, LOW);
+    } else {
+      digitalWrite(PIN_MOTOR_IN1, LOW);
+      digitalWrite(PIN_MOTOR_IN2, HIGH);
+    }
+
+    // 2. Drive PWM to ENA (Full 0-255 range)
+    #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+      ledcWrite(PIN_MOTOR_ENA, duty_8bit);
+    #else
+      ledcWrite(PWM_LEDC_CHANNEL, duty_8bit);
+    #endif
+
+    int pct = (int)((duty_8bit / 255.0f) * 100.0f);
+    s_current_mode = "RUN_" + String(pct);
+  } else {
+    // 3. High-Z Coasting: ENA=0, IN1=0, IN2=0 (Zero dynamic braking)
+    #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+      ledcWrite(PIN_MOTOR_ENA, 0);
+    #else
+      ledcWrite(PWM_LEDC_CHANNEL, 0);
+    #endif
+    digitalWrite(PIN_MOTOR_IN1, LOW);
+    digitalWrite(PIN_MOTOR_IN2, LOW);
+    s_current_mode = "ARMED_IDLE";
+  }
+}
+
+void setDriverPower(bool enable) {
+  s_driver_armed = enable;
+  if (!s_driver_armed) {
+    setMotorDuty(0);
+    s_current_mode = "DISARMED";
+    Serial.println("ACK:DRIVER_POWER:OFF");
+  } else {
+    s_current_mode = "ARMED_IDLE";
+    Serial.println("ACK:DRIVER_POWER:ON");
   }
 }
 
 // =============================================================================
-// ENCODER SPEED & COAST-DOWN DECELERATION CALCULATION ROUTINE
+// HYBRID SPEED CALCULATION (DUAL WINDOW + INTERVAL FOR ACCURATE RPM)
 // =============================================================================
-void updateSpeedAndDeceleration(float dt_sec) {
+void calculateSpeed() {
+  uint32_t now_ms = millis();
   uint32_t now_us = micros();
-  uint32_t elapsed_since_pulse_us = now_us - s_last_pulse_us;
+  uint32_t dt_ms = now_ms - s_last_speed_calc_ms;
+  if (dt_ms == 0) return;
+  s_last_speed_calc_ms = now_ms;
 
-  // If no pulse received for > 250ms, motor is stopped
-  if (elapsed_since_pulse_us > 250000 || s_pulse_interval_us == 0) {
+  // Atomically grab pulses counted in this measurement window
+  noInterrupts();
+  uint32_t pulses = s_pulse_counter_window;
+  s_pulse_counter_window = 0;
+  uint32_t last_pulse = s_last_pulse_us;
+  uint32_t interval = s_pulse_interval_us;
+  interrupts();
+
+  uint32_t elapsed_since_pulse_us = now_us - last_pulse;
+
+  // If no pulse received for > 400 ms, shaft has stopped
+  if (elapsed_since_pulse_us > 400000 || last_pulse == 0) {
     s_rpm = 0.0f;
-    s_omega_rad_s = 0.0f;
-  } else {
-    // RPM = (60 * 1,000,000) / (PPR * interval_us) -> with PPR=4: 15,000,000 / interval
-    float inst_rpm = 15000000.0f / (float)s_pulse_interval_us;
-    // Single-pole IIR filter to eliminate discrete pulse ripple
-    s_rpm = (0.75f * inst_rpm) + (0.25f * s_rpm);
-    s_omega_rad_s = s_rpm * (2.0f * (float)PI / 60.0f);
+    return;
   }
 
-  // Calculate angular acceleration / deceleration (rad/s^2)
-  if (dt_sec > 0.0f) {
-    s_deceleration_rad_s2 = (s_omega_rad_s - s_last_omega_rad_s) / dt_sec;
-    s_last_omega_rad_s = s_omega_rad_s;
+  // Method 1: Pulse frequency count over window
+  // RPM = (pulses / PPR) * (60 * 1000 / dt_ms)
+  float pulse_rpm = ((float)pulses / (float)PULSES_PER_REV) * (60000.0f / (float)dt_ms);
+
+  // Method 2: High-resolution pulse period interval
+  // RPM = 3,000,000 / interval_us (for PPR=20)
+  float period_rpm = (interval > 0) ? (3000000.0f / (float)interval) : 0.0f;
+
+  float computed_rpm = 0.0f;
+  if (pulses >= 2) {
+    computed_rpm = pulse_rpm;
+  } else if (pulses == 1 && period_rpm > 0.0f && period_rpm < 12000.0f) {
+    computed_rpm = period_rpm;
+  } else if (pulses == 0 && elapsed_since_pulse_us < 350000) {
+    computed_rpm = s_rpm * 0.70f;
   }
 
-  // COAST-DOWN EDGE DIAGNOSTICS:
-  // When motor is coasting (PWM = 0), record angular deceleration to detect mechanical drag
-  if (s_current_pwm_pct <= 0.0f) {
-    if (s_coast_state == COAST_IDLE && s_omega_rad_s > 40.0f) {
-      s_coast_state = COAST_RECORDING;
-      s_coast_start_us = now_us;
-      s_coast_start_omega = s_omega_rad_s;
-    } else if (s_coast_state == COAST_RECORDING) {
-      uint32_t coast_elapsed_us = now_us - s_coast_start_us;
-      if (coast_elapsed_us >= 400000) { // 400ms decay observation window
-        float coast_dt = (float)coast_elapsed_us / 1000000.0f;
-        float net_alpha = (s_omega_rad_s - s_coast_start_omega) / coast_dt;
-        s_deceleration_rad_s2 = net_alpha;
-        s_coast_state = COAST_IDLE;
+  // Single-pole IIR filter for jitter suppression
+  s_rpm = (0.75f * computed_rpm) + (0.25f * s_rpm);
+  if (s_rpm < 15.0f && pulses == 0) {
+    s_rpm = 0.0f;
+  }
+}
 
-        if (net_alpha < FAULT_DECEL_FATIGUE) {
-          s_alarm_bearing_drag = true;
+// =============================================================================
+// IN-SITU ARMATURE RESISTANCE (Ra) PULSE TEST ROUTINE
+// =============================================================================
+void executeRaPulseTest() {
+  if (!s_driver_armed) {
+    Serial.println("ERR:DRIVER_DISARMED:ENABLE_DRIVER_FIRST");
+    return;
+  }
+
+  s_current_mode = "RA_TEST";
+
+  // Ensure motor is stationary
+  setMotorDuty(0);
+  delay(150);
+
+  // Apply calibrated pulse (60ms @ 40% duty)
+  setMotorDuty(102, true);
+
+  float v_sum = 0.0f;
+  float i_sum = 0.0f;
+  int valid_samples = 0;
+
+  // Sample during the electrical steady-state window (20ms - 55ms)
+  uint32_t pulse_start = millis();
+  while (millis() - pulse_start < 60) {
+    if (millis() - pulse_start >= 20) {
+      if (s_ina_online) {
+        float v = ina219.getBusVoltage_V();
+        float i = ina219.getCurrent_mA();
+        if (i > 30.0f) {
+          v_sum += v;
+          i_sum += i;
+          valid_samples++;
         }
       }
+      delay(4);
     }
-  } else {
-    s_coast_state = COAST_IDLE;
-    s_alarm_bearing_drag = false;
   }
+
+  // Terminate pulse
+  setMotorDuty(0);
+
+  float v_avg = valid_samples > 0 ? (v_sum / valid_samples) : 12.0f;
+  float i_avg = valid_samples > 0 ? (i_sum / valid_samples) : 0.0f;
+  float ra_calc = (i_avg > 30.0f) ? (v_avg / (i_avg / 1000.0f)) : 0.0f;
+
+  Serial.printf("ACK:MEASURE_RA:V=%.2f,I=%.1f,Ra=%.3f\r\n", v_avg, i_avg, ra_calc);
 }
 
 // =============================================================================
-// OLED DISPLAY RENDERER (1.3" SH1106 / 128x64)
+// LOCAL SH1106 OLED DISPLAY (1.3" 128x64)
 // =============================================================================
-void renderOLED(float volts, float current_ma, float temp_c, float vib_rms, const char* status_str) {
+void updateOLED(float v_bus, float i_ma, float temp_c, float vib_g) {
   if (!s_oled_online) return;
 
   display.clearDisplay();
 
-  // 1. Inverted Header Bar
+  // Header Bar
   display.fillRect(0, 0, 128, 10, SH110X_WHITE);
   display.setTextColor(SH110X_BLACK);
   display.setTextSize(1);
-  display.setCursor(6, 1);
-  display.print("DC-MOTOR DIAGNOSTIC");
+  display.setCursor(4, 1);
+  display.print("PMDC MOTOR SCADA");
 
-  // 2. Telemetry Rows
+  // Telemetry Rows
   display.setTextColor(SH110X_WHITE);
 
-  // Line 1: RPM & PWM
-  display.setCursor(0, 13);
-  display.printf("RPM: %-4d  (%d%%)", (int)s_rpm, (int)s_current_pwm_pct);
+  // Line 1: RPM & Pulses
+  display.setCursor(0, 14);
+  display.printf("RPM: %-5.0f [%s]", s_rpm, s_current_mode.c_str());
 
-  // Line 2: Voltage & Current
-  display.setCursor(0, 23);
-  display.printf("%4.1fV   %4dmA", volts, (int)current_ma);
+  // Line 2: Bus Voltage & Armature Current
+  display.setCursor(0, 26);
+  display.printf("V: %4.1fV  I: %4.0fmA", v_bus, i_ma);
 
-  // Line 3: Temperature & Vibration RMS
-  display.setCursor(0, 33);
-  display.printf("T:%3.0fC  V:%3.2fg", temp_c, vib_rms);
+  // Line 3: Temp & Vibration
+  display.setCursor(0, 38);
+  display.printf("T: %4.1fC  V: %4.2fG", temp_c, vib_g);
 
-  // Line 4: Coast Deceleration
-  display.setCursor(0, 43);
-  display.printf("dw/dt: %4.1f r/s2", s_deceleration_rad_s2);
+  // Divider
+  display.drawLine(0, 50, 127, 50, SH110X_WHITE);
 
-  // Divider Line
-  display.drawLine(0, 52, 127, 52, SH110X_WHITE);
-
-  // 3. Status Banner
-  if (strcmp(status_str, "ALERT") == 0) {
-    display.fillRect(0, 54, 128, 10, SH110X_WHITE);
-    display.setTextColor(SH110X_BLACK);
-    display.setCursor(14, 55);
-    display.print("! FAULT ALARM !");
-  } else if (strcmp(status_str, "WARNING") == 0) {
-    display.setTextColor(SH110X_WHITE);
-    display.setCursor(14, 55);
-    display.print("STATUS: ELEVATED");
+  // Line 4: Status Indicator / Driver State
+  display.setCursor(0, 53);
+  if (!s_driver_armed) {
+    display.print("PWR: [DISARMED]");
+  } else if (temp_c > 50.0f || i_ma > 900.0f || vib_g > 1.50f) {
+    display.print("PWR: ON  ! ALERT !");
   } else {
-    display.setTextColor(SH110X_WHITE);
-    display.setCursor(18, 55);
-    display.print("HEALTH: NORMAL");
+    display.print("PWR: ON  [HEALTHY]");
   }
 
   display.display();
 }
 
 // =============================================================================
-// ARDUINO SETUP
+// SERIAL COMMAND INTERPRETER & HANDSHAKE PROTOCOL
+// =============================================================================
+void processSerialCommands() {
+  while (Serial.available() > 0) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd.length() == 0) continue;
+
+    // Command 1: Driver Master Power Switch: CMD:DRIVER_POWER:<ON|OFF|1|0>
+    if (cmd.startsWith("CMD:DRIVER_POWER:")) {
+      String state = cmd.substring(17);
+      state.toUpperCase();
+      if (state == "ON" || state == "1") {
+        setDriverPower(true);
+      } else {
+        setDriverPower(false);
+      }
+    }
+    // Command 2: Speed Setpoint: CMD:SET_SPEED:<0-255>
+    else if (cmd.startsWith("CMD:SET_SPEED:")) {
+      int duty = cmd.substring(14).toInt();
+      duty = constrain(duty, 0, 255);
+      setMotorDuty((uint8_t)duty, true);
+      Serial.printf("ACK:SET_SPEED:%d\r\n", duty);
+    }
+    // Command 3: Emergency Stop: CMD:ESTOP
+    else if (cmd.equalsIgnoreCase("CMD:ESTOP") || cmd.equalsIgnoreCase("STOP")) {
+      setMotorDuty(0);
+      s_coast_test_state = COAST_STATE_IDLE;
+      Serial.println("ACK:ESTOP");
+    }
+    // Command 4: Automated Coast-Down Test: CMD:RUN_COAST_TEST
+    else if (cmd.equalsIgnoreCase("CMD:RUN_COAST_TEST")) {
+      if (!s_driver_armed) {
+        Serial.println("ERR:DRIVER_DISARMED:ENABLE_DRIVER_FIRST");
+      } else {
+        s_coast_test_state = COAST_STATE_SPINUP;
+        s_coast_start_ms = millis();
+        setMotorDuty(191, true); // Ramp to 75% baseline speed
+        Serial.println("ACK:RUN_COAST_TEST");
+      }
+    }
+    // Command 5: Armature Resistance Pulse: CMD:MEASURE_RA
+    else if (cmd.equalsIgnoreCase("CMD:MEASURE_RA")) {
+      executeRaPulseTest();
+    }
+    // Command 6: Ping Heartbeat: CMD:PING
+    else if (cmd.equalsIgnoreCase("CMD:PING")) {
+      Serial.println("ACK:PONG");
+    }
+    else {
+      Serial.printf("ERR:UNKNOWN_COMMAND:%s\r\n", cmd.c_str());
+    }
+  }
+}
+
+// =============================================================================
+// SETUP INITIALIZATION
 // =============================================================================
 void setup() {
-  // 1. Initialize Serial Port (USB CDC)
+  // 1. Initialize Serial Port (115200 Baud)
   Serial.begin(115200);
-  delay(1000);
+  delay(100);
 
-  Serial.println("\r\n==================================================");
-  Serial.println("  DC MOTOR REAL-TIME HEALTH DIAGNOSTIC SYSTEM     ");
-  Serial.println("  Raspberry Pi Pico H (Arduino Core / C++)       ");
-  Serial.println("==================================================");
+  // 2. Heartbeat LED Pin
+  pinMode(PIN_LED_HEARTBEAT, OUTPUT);
+  digitalWrite(PIN_LED_HEARTBEAT, HIGH);
 
-  // 2. Initialize Shared I2C0 Bus on GP4 (SDA) / GP5 (SCL)
-  Wire.setSDA(PIN_I2C_SDA);
-  Wire.setSCL(PIN_I2C_SCL);
-  Wire.begin();
-  Wire.setClock(400000); // 400 kHz Fast-Mode
-
-  // 3. Initialize Optical Encoder on GP2
-  pinMode(PIN_ENCODER, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(PIN_ENCODER), encoderISR, FALLING);
-
-  // 4. Initialize L298N Motor Driver Pins
+  // 3. L298N Direction & PWM Setup
   pinMode(PIN_MOTOR_IN1, OUTPUT);
   pinMode(PIN_MOTOR_IN2, OUTPUT);
-  pinMode(PIN_MOTOR_ENA, OUTPUT);
   digitalWrite(PIN_MOTOR_IN1, LOW);
   digitalWrite(PIN_MOTOR_IN2, LOW);
-  analogWriteFreq(PWM_FREQUENCY_HZ);      // 20 kHz Ultrasonic PWM
-  analogWriteResolution(PWM_RESOLUTION_BITS); // 10-bit (0-1023)
-  analogWrite(PIN_MOTOR_ENA, 0);
 
-  // 5. Initialize DS18B20 1-Wire Digital Thermometer
-  tempSensor.begin();
-  tempSensor.setWaitForConversion(false); // Non-blocking asynchronous conversion
-  tempSensor.requestTemperatures();
-  s_last_temp_req_ms = millis();
-  s_temp_conversion_pending = true;
+  // ESP32 LEDC PWM Setup (1 kHz, 8-bit resolution)
+  #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+    ledcAttach(PIN_MOTOR_ENA, PWM_FREQ_HZ, PWM_RESOLUTION_BITS);
+    ledcWrite(PIN_MOTOR_ENA, 0);
+  #else
+    ledcSetup(PWM_LEDC_CHANNEL, PWM_FREQ_HZ, PWM_RESOLUTION_BITS);
+    ledcAttachPin(PIN_MOTOR_ENA, PWM_LEDC_CHANNEL);
+    ledcWrite(PWM_LEDC_CHANNEL, 0);
+  #endif
 
-  // 6. Initialize MPU-6050 IMU
-  if (mpu.begin(0x68, &Wire)) {
-    mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
-    mpu.setGyroRange(MPU6050_RANGE_250_DEG);
-    mpu.setFilterBandwidth(MPU6050_BAND_44_HZ); // 44 Hz DLPF suppresses aliasing
-    s_mpu_online = true;
-    Serial.println("[MPU-6050] Initialized successfully at 0x68 (44Hz DLPF)");
-  } else {
-    Serial.println("[MPU-6050] Warning: Sensor not detected on I2C0!");
-  }
+  // 4. Optical Encoder on GPIO 18 (Input with internal pull-up)
+  pinMode(PIN_ENCODER, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PIN_ENCODER), encoderISR, CHANGE);
 
-  // 7. Initialize INA219 Current/Power Monitor
+  // 5. I2C Bus on GPIO 21 (SDA) and GPIO 22 (SCL)
+  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);
+  Wire.setTimeOut(50);
+
+  // Initialize INA219
   if (ina219.begin(&Wire)) {
     s_ina_online = true;
-    Serial.println("[INA219] Initialized successfully at 0x40 (32V/2A Range)");
-  } else {
-    Serial.println("[INA219] Warning: Sensor not detected on I2C0!");
   }
 
-  // 8. Initialize 1.3-inch SH1106 OLED Display (0x3C)
+  // Initialize MPU-6050
+  if (mpu.begin(0x68, &Wire)) {
+    mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
+    mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
+    s_mpu_online = true;
+  }
+
+  // Initialize 1.3" SH1106 OLED (0x3C)
   if (display.begin(0x3C, true)) {
     s_oled_online = true;
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SH110X_WHITE);
-    display.setCursor(4, 24);
-    display.println("DC MOTOR SYSTEM");
-    display.setCursor(4, 36);
-    display.println("FIRMWARE READY");
+    display.setCursor(8, 26);
+    display.println("ESP32 SCADA BENCH");
+    display.setCursor(8, 38);
+    display.println("ONLINE - 115200");
     display.display();
-    delay(500);
-    Serial.println("[SH1106] 1.3\" OLED Display Initialized successfully");
-  } else {
-    Serial.println("[SH1106] Warning: OLED Display not detected on 0x3C!");
+    delay(300);
   }
 
-  Serial.println("==================================================");
-  Serial.println("System Running. Type 'HELP' for serial commands.\r\n");
+  // 6. Initialize DS18B20 1-Wire Thermometer
+  tempSensor.begin();
+  tempSensor.setWaitForConversion(false);
+  tempSensor.requestTemperatures();
+  s_last_temp_req_ms = millis();
+  s_last_speed_calc_ms = millis();
+
+  digitalWrite(PIN_LED_HEARTBEAT, LOW);
+  Serial.println("ACK:BOOT:ESP32_SCADA_SYSTEM_READY");
 }
 
 // =============================================================================
-// SERIAL COMMAND PROCESSOR
-// =============================================================================
-void processSerialInput() {
-  if (Serial.available() > 0) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
-
-    if (cmd.startsWith("SPEED ")) {
-      float spd = cmd.substring(6).toFloat();
-      setMotorSpeed(spd);
-      Serial.printf(">> [COMMAND] Motor Speed set to %.1f%%\r\n", spd);
-    } else if (cmd.equalsIgnoreCase("STOP")) {
-      setMotorSpeed(0.0f);
-      Serial.println(">> [COMMAND] Motor Coast-Down Stop Initiated.");
-    } else if (cmd.equalsIgnoreCase("HELP")) {
-      Serial.println("\r\n--- SERIAL COMMANDS ---");
-      Serial.println("  SPEED <0-100> : Command target PWM duty cycle percentage");
-      Serial.println("  STOP          : Initiate motor coast-down stop");
-      Serial.println("-----------------------\r\n");
-    }
-  }
-}
-
-// =============================================================================
-// ARDUINO MAIN LOOP (DETERMINISTIC 5 HZ CONTROL LOOP)
+// MAIN 10 HZ DETERMINISTIC CONTROL LOOP
 // =============================================================================
 void loop() {
   uint32_t now_ms = millis();
 
-  // 1. Service Serial Console Commands
-  processSerialInput();
+  // 1. Process Incoming Serial Commands
+  processSerialCommands();
 
-  // 2. Periodic Telemetry, Diagnostics & Display Refresh (5 Hz / 200ms)
-  if ((now_ms - s_last_telemetry_tick_ms) >= TELEMETRY_INTERVAL_MS) {
-    float dt_sec = (float)(now_ms - s_last_telemetry_tick_ms) / 1000.0f;
-    s_last_telemetry_tick_ms = now_ms;
+  // 2. Service Coast-Down Test Automation
+  if (s_coast_test_state == COAST_STATE_SPINUP) {
+    if (now_ms - s_coast_start_ms >= 2000) {
+      // 2 seconds spin-up complete: instantly cut PWM to high-Z coasting
+      setMotorDuty(0);
+      s_coast_test_state = COAST_STATE_COASTING;
+      Serial.println("ACK:COAST_CUTOFF");
+    }
+  } else if (s_coast_test_state == COAST_STATE_COASTING) {
+    if (s_rpm < 15.0f || (now_ms - s_coast_start_ms >= 6000)) {
+      s_coast_test_state = COAST_STATE_IDLE;
+      Serial.printf("ACK:COAST_STOP:dt_ms=%lu\r\n", now_ms - s_coast_start_ms - 2000);
+    }
+  }
 
-    // A. Update Optical Speed & Deceleration Analytics
-    updateSpeedAndDeceleration(dt_sec);
+  // 3. Heartbeat LED (1 Hz Blinking)
+  if (now_ms - s_last_hb_toggle_ms >= 500) {
+    s_last_hb_toggle_ms = now_ms;
+    s_hb_led_state = !s_hb_led_state;
+    digitalWrite(PIN_LED_HEARTBEAT, s_hb_led_state ? HIGH : LOW);
+  }
 
-    // B. Read INA219 Voltage and Current
-    float bus_volts = 0.0f;
-    float current_ma = 0.0f;
-    float power_mw = 0.0f;
+  // 4. Non-blocking DS18B20 Temperature Sampling (~750ms interval)
+  if (now_ms - s_last_temp_req_ms >= 750) {
+    float read_c = tempSensor.getTempCByIndex(0);
+    if (read_c > -50.0f && read_c < 125.0f) {
+      s_latest_temp_c = read_c;
+    }
+    tempSensor.requestTemperatures();
+    s_last_temp_req_ms = now_ms;
+  }
+
+  // 5. Periodic 10 Hz Telemetry Dispatch
+  if (now_ms - s_last_telemetry_ms >= TELEMETRY_PERIOD_MS) {
+    s_last_telemetry_ms = now_ms;
+
+    // A. Calculate Speed (Dual window + interval)
+    calculateSpeed();
+
+    // B. Read INA219
+    float v_bus = 0.0f;
+    float i_ma  = 0.0f;
     if (s_ina_online) {
-      bus_volts = ina219.getBusVoltage_V();
-      current_ma = ina219.getCurrent_mA();
-      power_mw = ina219.getPower_mW();
-      if (current_ma < 0.0f) current_ma = 0.0f;
+      v_bus = ina219.getBusVoltage_V();
+      i_ma  = ina219.getCurrent_mA();
+      if (i_ma < 0.0f) i_ma = 0.0f;
     }
 
-    // C. Read MPU-6050 Accelerometer & Calculate Vibration RMS
-    float vib_rms = 0.0f;
+    // C. Read MPU-6050 Vibration
+    float vib_g = 0.02f;
     if (s_mpu_online) {
       sensors_event_t a, g, temp;
       mpu.getEvent(&a, &g, &temp);
-      // a.acceleration values are in m/s^2. Convert to g:
       float ax_g = a.acceleration.x / 9.80665f;
       float ay_g = a.acceleration.y / 9.80665f;
       float az_g = a.acceleration.z / 9.80665f;
-
-      // Compensate for 1.0g Earth gravity on Z-axis
       float dyn_z = (az_g > 0.0f) ? (az_g - 1.0f) : (az_g + 1.0f);
-      vib_rms = sqrtf((ax_g * ax_g) + (ay_g * ay_g) + (dyn_z * dyn_z));
+      vib_g = sqrtf((ax_g * ax_g) + (ay_g * ay_g) + (dyn_z * dyn_z));
     }
 
-    // D. Non-blocking DS18B20 Temperature Sampling (Takes ~750ms for 12-bit)
-    if (s_temp_conversion_pending && (now_ms - s_last_temp_req_ms >= 750)) {
-      float read_temp = tempSensor.getTempCByIndex(0);
-      if (read_temp > -55.0f && read_temp < 125.0f) {
-        s_latest_temp_c = read_temp;
-      }
-      tempSensor.requestTemperatures(); // Queue next conversion
-      s_last_temp_req_ms = now_ms;
-    }
+    // D. Update Local 1.3" OLED Display
+    updateOLED(v_bus, i_ma, s_latest_temp_c, vib_g);
 
-    // E. Evaluate Multi-Tier Fault & Anomaly Triggers
-    bool alarm_temp = s_latest_temp_c >= FAULT_TEMP_ALARM_C;
-    bool alarm_current = current_ma >= FAULT_CURRENT_ALARM_MA;
-    bool alarm_vib = vib_rms >= FAULT_VIB_ALARM_G;
-
-    // Rotor Stall Detection: Commanded PWM >= 25% but RPM < 30 for > 1.5s
-    if (s_current_pwm_pct >= 25.0f && s_rpm < 30.0f) {
-      if (s_stall_start_ms == 0) {
-        s_stall_start_ms = now_ms;
-      } else if ((now_ms - s_stall_start_ms) >= FAULT_STALL_TIME_MS) {
-        s_alarm_stall = true;
-      }
-    } else {
-      s_stall_start_ms = 0;
-      s_alarm_stall = false;
-    }
-
-    const char* status_str = "NORMAL";
-    if (alarm_temp || alarm_current || alarm_vib || s_alarm_stall) {
-      status_str = "ALERT";
-    } else if (s_latest_temp_c >= FAULT_TEMP_WARN_C || current_ma >= FAULT_CURRENT_WARN_MA || vib_rms >= FAULT_VIB_WARN_G || s_alarm_bearing_drag) {
-      status_str = "WARNING";
-    }
-
-    // F. Render Telemetry to 1.3" OLED Display
-    renderOLED(bus_volts, current_ma, s_latest_temp_c, vib_rms, status_str);
-
-    // G. Transmit Real-Time Formatted JSON Telemetry Packet over Serial
-    Serial.printf("{\"time_ms\":%lu,\"pwm_pct\":%.1f,\"rpm\":%.1f,\"volts\":%.2f,"
-                  "\"curr_ma\":%.1f,\"power_mw\":%.1f,\"temp_c\":%.2f,\"vib_rms_g\":%.3f,"
-                  "\"decel_rad_s2\":%.2f,\"status\":\"%s\","
-                  "\"alarms\":{\"overtemp\":%s,\"overcurrent\":%s,\"vibration\":%s,\"stall\":%s,\"bearing_drag\":%s}}\r\n",
-                  now_ms,
-                  s_current_pwm_pct,
+    // E. Emit Strict JSON Telemetry Frame Over Serial
+    // Expected Frame: {"mode": "RUN_75", "v_bus": 12.04, "i_ma": 320.5, "rpm": 1820.0, "temp_c": 31.4, "vib_g": 0.18, "ts_ms": 104250, "driver_pwr": 1}
+    Serial.printf("{\"mode\": \"%s\", \"v_bus\": %.2f, \"i_ma\": %.1f, \"rpm\": %.1f, \"temp_c\": %.1f, \"vib_g\": %.2f, \"ts_ms\": %lu, \"driver_pwr\": %d}\r\n",
+                  s_current_mode.c_str(),
+                  v_bus,
+                  i_ma,
                   s_rpm,
-                  bus_volts,
-                  current_ma,
-                  power_mw,
                   s_latest_temp_c,
-                  vib_rms,
-                  s_deceleration_rad_s2,
-                  status_str,
-                  alarm_temp ? "true" : "false",
-                  alarm_current ? "true" : "false",
-                  alarm_vib ? "true" : "false",
-                  s_alarm_stall ? "true" : "false",
-                  s_alarm_bearing_drag ? "true" : "false");
+                  vib_g,
+                  now_ms,
+                  s_driver_armed ? 1 : 0);
   }
 }

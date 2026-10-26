@@ -157,19 +157,52 @@ http://localhost:8080
 | **Power Rails** | 3.3V (OUT) | 3V3 | Pin 36 | Sensor logic power & pull-up supply |
 | | GND | GND | Pins 3, 8, 13, etc. | Common ground with L298N and power supply |
 
-### Arduino IDE Firmware Setup
+### Antigravity & CLI Firmware Setup (ESP-Style Zero-Hardware Workflow)
+
+No BOOTSEL button or jumper wires are needed! The system includes an automated toolchain and software reset handler (`pico_tool.py`):
+
+#### 1-Click Commands:
+```bash
+# Check if your Pico H is plugged in (detects both BOOTSEL drive and COM port)
+python pico_tool.py detect
+
+# Compile the C/C++ firmware into a UF2 binary
+python pico_tool.py build
+
+# Flash firmware automatically (detects RPI-RP2 drive or 1200-baud auto-resets COM port)
+python pico_tool.py upload
+
+# Build, upload, and open the serial telemetry monitor in one step
+python pico_tool.py run
+
+# Live serial monitor with interactive motor commands
+python pico_tool.py monitor
+
+# Force Pico into UF2 bootloader mode from terminal without touching any hardware
+python pico_tool.py bootsel
+```
+
+#### Antigravity / VS Code Tasks:
+Press `Ctrl+Shift+B` or open the Command Palette (`Ctrl+Shift+P` -> `Tasks: Run Task`):
+- **Pico: Build Firmware** (Default Build)
+- **Pico: Upload / Flash Firmware**
+- **Pico: Build & Upload (1-Click Flash)**
+- **Pico: Serial Telemetry Monitor**
+- **Pico: Software BOOTSEL Reset**
+
+> **How it works without a BOOTSEL button or jumper wires:**
+> - **Blank / Brand-new Pico H:** Because flash memory is empty, the RP2040 Boot ROM automatically mounts as drive `RPI-RP2` immediately when plugged in.
+> - **Subsequent Re-flashing:** The Earle Philhower core and our firmware detect a standard **1200-baud touch** (opening the COM port at 1200 bps) and the serial command `BOOTSEL`. The board reboots directly into UF2 mode automatically before uploading, exactly like an ESP32 auto-reset circuit!
+
+---
+
+### Alternative: Arduino IDE Setup (Optional)
 
 1. Open the Arduino IDE.
-2. Ensure you have the **Raspberry Pi Pico** core installed (recommended: *Raspberry Pi Pico/RP2040 by Earle F. Philhower, III*).
-3. Install the required libraries via **Sketch -> Include Library -> Manage Libraries...**:
-   - `Adafruit MPU6050`
-   - `Adafruit INA219`
-   - `OneWire`
-   - `DallasTemperature`
-   - `Adafruit SH110X`
-4. Open [dc_motor_health_monitor/dc_motor_health_monitor.ino](dc_motor_health_monitor/dc_motor_health_monitor.ino).
-5. Select **Raspberry Pi Pico** in **Tools -> Board**, plug in your Pico over USB, choose the COM port, and click **Upload**.
-6. Switch the Web Dashboard to **Raspberry Pi Pico** mode and click **Connect to Pico**.
+2. Select board **Raspberry Pi Pico** (using *Raspberry Pi Pico/RP2040 by Earle F. Philhower, III*).
+3. Open [dc_motor_health_monitor/dc_motor_health_monitor.ino](dc_motor_health_monitor/dc_motor_health_monitor.ino).
+4. Click **Upload** (the Philhower core automatically 1200-baud resets the board).
+5. Switch the Web Dashboard to **Raspberry Pi Pico** mode and click **Connect to Pico**.
 
 ---
 

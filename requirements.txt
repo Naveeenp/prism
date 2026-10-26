@@ -1,7 +1,5 @@
-# DC Motor Health Monitoring System - Python Dependencies
-#
-# Note: The simulation engine and web dashboard can run purely on Python's
-# standard library. pyserial is required when connecting to the physical
-# Raspberry Pi Pico H via USB Serial.
+# PMDC Motor Health Monitoring & Diagnostic System
+# Standards: ISA-101 Industrial Ergonomics & Telemetry
+# Microcontroller Target: ESP-32S (38-pin NodeMCU)
 
 pyserial>=3.5
