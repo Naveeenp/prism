@@ -1,3 +1,5 @@
+Work in progress - vibecoded this one for college project
+
 # DC Motor Real-Time Predictive Health Diagnostic System
 
 [![Python Version](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
