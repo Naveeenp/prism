@@ -606,6 +606,15 @@ class SCADABackendEngine:
         self.sim_speed_pwm: float = 0.0
         self.sim_coast_active: bool = False
         self.simulator = DCMotorPhysicsSimulator()
+        self.active_sim_faults: Dict[str, bool] = {
+            "overheat": False,
+            "overcurrent": False,
+            "stall": False,
+            "bearing_drag": False,
+            "vibration": False,
+            "voltage_drop": False
+        }
+        self.last_auto_trip_time: float = 0.0
 
         self.latest_telemetry: Dict[str, Any] = {
             "mode": "IDLE",
@@ -682,7 +691,9 @@ class SCADABackendEngine:
                 "seq": frame.get("seq", 0),
                 "pulses": frame.get("pulses", 0),
                 "ina_ok": bool(frame.get("ina_ok", 1)),
-                "mpu_ok": bool(frame.get("mpu_ok", 1))
+                "mpu_ok": bool(frame.get("mpu_ok", 1)),
+                "active_faults": dict(self.active_sim_faults),
+                "problem_count": len(active_alarms)
             }
 
             # 5. Log to CSV
@@ -735,6 +746,33 @@ class SCADABackendEngine:
             if overall != AlarmSeverity.CRITICAL:
                 overall = AlarmSeverity.CAUTION
             self._add_alarm(AlarmSeverity.CAUTION, "VIBRATION_RMS", msg)
+
+        # Rotor Jam / Stall check (commanded speed > 15% but rpm near 0)
+        curr_duty = frame.get("duty", int((self.sim_speed_pwm / 100.0) * 255.0))
+        if curr_duty > 35 and rpm < self.LIMITS["stall_rpm"]:
+            msg = f"Rotor Jam / Stall: {rpm:.0f} RPM with Duty {curr_duty}"
+            active_alarms.append(msg)
+            overall = AlarmSeverity.CRITICAL
+            self._add_alarm(AlarmSeverity.CRITICAL, "ROTOR_STALL", msg)
+
+        # Multiple Problems Protection & Auto-Trip
+        # If 2 or more problems arise, limit or turn off the motor to prevent catastrophic damage
+        problem_count = len(active_alarms)
+        if problem_count >= 2:
+            now_t = time.time()
+            if now_t - self.last_auto_trip_time > 2.0:
+                self.last_auto_trip_time = now_t
+                trip_msg = f"Multiple Faults Interlock ({problem_count} active): Limiting and Halting Motor Output"
+                self._add_alarm(AlarmSeverity.CRITICAL, "SAFETY_INTERLOCK", trip_msg)
+                
+                # Turn off / limit simulation motor
+                self.sim_speed_pwm = 0.0
+                
+                # If physical hardware ESP32 is connected, cut off the actual motor!
+                if self.serial_worker.is_connected:
+                    self.serial_worker.send_command("CMD:SET_SPEED:0")
+                    self.serial_worker.send_command("CMD:DRIVER_POWER:OFF")
+                    self.serial_worker.send_command("CMD:ESTOP")
 
         return active_alarms, overall
 
@@ -946,14 +984,42 @@ class SCADABackendEngine:
     # Built-in High-Fidelity Physics Simulation Loop (for Offline Bench Testing)
     # --------------------------------------------------------------------------
     def inject_faults(self, faults_dict: Dict[str, Any]):
-        """Injects or clears fault conditions in the DCMotorPhysicsSimulator."""
+        """
+        Injects or clears fault conditions in the DCMotorPhysicsSimulator.
+        SAFETY RULE: If live ESP32 hardware is connected and a simulation fault is
+        triggered, automatically turn off and disarm the actual hardware motor immediately!
+        """
         with self.lock:
+            for k, v in faults_dict.items():
+                self.active_sim_faults[k] = bool(v)
+
             self.simulator.set_faults(faults_dict)
             self._add_alarm(AlarmSeverity.CAUTION, "SIM_FAULT", f"Injected simulation fault profile: {faults_dict}")
+
+            # Check if any fault is active
+            has_active_fault = any(self.active_sim_faults.values())
+
+        # If live hardware ESP32 is connected and a simulation fault is active, stop the physical motor!
+        if self.serial_worker.is_connected and has_active_fault:
+            logger.warning("Simulation fault triggered while live ESP32 connected! Halting physical motor output...")
+            # Dispatch hardware emergency stop and disarm driver to guarantee motor is OFF
+            self.serial_worker.send_command("CMD:SET_SPEED:0")
+            self.serial_worker.send_command("CMD:DRIVER_POWER:OFF")
+            self.serial_worker.send_command("CMD:ESTOP")
+            with self.lock:
+                self.sim_speed_pwm = 0.0
+                self.latest_telemetry["driver_pwr"] = False
+            self._add_alarm(
+                AlarmSeverity.CRITICAL,
+                "SAFETY_INTERLOCK",
+                "Simulation Fault Triggered: Live ESP32 Motor Output Immediately Cut Off"
+            )
 
     def clear_all_faults(self):
         """Clears all active simulation faults."""
         with self.lock:
+            for k in self.active_sim_faults:
+                self.active_sim_faults[k] = False
             self.simulator.clear_all_faults()
             self._add_alarm(AlarmSeverity.NORMAL, "SIM_FAULT", "Cleared all active simulation faults")
 

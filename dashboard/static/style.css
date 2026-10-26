@@ -127,6 +127,25 @@ body {
   background-color: #333333;
 }
 
+.btn-audio-toggle {
+  background-color: #1B5E20;
+  color: #A5D6A7;
+  border: 1px solid #2E7D32;
+  font-weight: 700;
+  padding: 6px 12px;
+}
+
+.btn-audio-toggle:hover {
+  background-color: #2E7D32;
+  color: #FFFFFF;
+}
+
+.btn-audio-toggle.audio-muted {
+  background-color: #37474F;
+  color: #90A4AE;
+  border-color: #455A64;
+}
+
 .btn-connect {
   background-color: var(--color-normal);
   color: #FFFFFF;

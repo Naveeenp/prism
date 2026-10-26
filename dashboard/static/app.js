@@ -29,6 +29,101 @@ let packetRateHz = 10.0;
 let lastRateCheckTime = Date.now();
 
 // =============================================================================
+// AUDIO ALARM SYNTHESIZER (WEB AUDIO API - ZERO EXTERNAL ASSETS)
+// =============================================================================
+let audioCtx = null;
+let audioEnabled = true;
+let lastAudioAlertTime = 0;
+let lastAlertProblemCount = 0;
+
+function getAudioContext() {
+  if (!audioCtx) {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (AudioContext) {
+      audioCtx = new AudioContext();
+    }
+  }
+  if (audioCtx && audioCtx.state === "suspended") {
+    audioCtx.resume();
+  }
+  return audioCtx;
+}
+
+// Single Fault: Audible Clear Ping Alert (1000 Hz bell chime)
+function playPingAlert() {
+  if (!audioEnabled) return;
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(1050, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(800, ctx.currentTime + 0.18);
+
+    gain.gain.setValueAtTime(0.28, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.23);
+  } catch (err) {
+    console.warn("Audio ping error:", err);
+  }
+}
+
+// Multiple Problems: Two-Tone Industrial Warning Chime (880 Hz -> 587 Hz Urgent Clang)
+function playMultiProblemChime() {
+  if (!audioEnabled) return;
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    const playTone = (freq, delay, dur) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + delay);
+
+      gain.gain.setValueAtTime(0.35, ctx.currentTime + delay);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + dur);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(ctx.currentTime + delay);
+      osc.stop(ctx.currentTime + delay + dur);
+    };
+
+    // Urgent 3-pulse descending industrial chime sequence
+    playTone(987.77, 0.00, 0.16); // B5
+    playTone(783.99, 0.14, 0.16); // G5
+    playTone(523.25, 0.28, 0.35); // C5
+  } catch (err) {
+    console.warn("Audio chime error:", err);
+  }
+}
+
+function toggleAudioMute() {
+  audioEnabled = !audioEnabled;
+  const btn = document.getElementById("btnMuteAudio");
+  if (btn) {
+    if (audioEnabled) {
+      btn.textContent = "ALARM AUDIO: ON";
+      btn.classList.remove("audio-muted");
+      playPingAlert(); // Test chirp
+    } else {
+      btn.textContent = "ALARM AUDIO: MUTED";
+      btn.classList.add("audio-muted");
+    }
+  }
+}
+
+// =============================================================================
 // INITIALIZATION
 // =============================================================================
 window.addEventListener("DOMContentLoaded", () => {
@@ -36,6 +131,15 @@ window.addEventListener("DOMContentLoaded", () => {
   refreshPorts();
   startTelemetryStream();
   setInterval(pollAlarms, 1000);
+
+  // Resume Web Audio on first user interaction anywhere
+  const unlockAudio = () => {
+    getAudioContext();
+    window.removeEventListener("click", unlockAudio);
+    window.removeEventListener("keydown", unlockAudio);
+  };
+  window.addEventListener("click", unlockAudio);
+  window.addEventListener("keydown", unlockAudio);
 });
 
 // =============================================================================
@@ -442,7 +546,43 @@ function handleTelemetryUpdate(t) {
     mpuElem.className = ok ? "diag-stat-val badge-ok" : "diag-stat-val badge-err";
   }
 
-  // 5. Update Chart Buffers & Canvas Redraw
+  // 5. Sync Fault Injection Buttons from Telemetry if provided
+  if (t.active_faults) {
+    for (const k in t.active_faults) {
+      activeFaults[k] = Boolean(t.active_faults[k]);
+      const btn = document.getElementById(faultBtnIds[k]);
+      if (btn) {
+        if (activeFaults[k]) {
+          btn.classList.add("fault-active");
+        } else {
+          btn.classList.remove("fault-active");
+        }
+      }
+    }
+  }
+
+  // 6. Sound Alarms Trigger Logic
+  // Single fault -> audible ping; multiple faults -> warning chime & motor limiting
+  const activeAlarmsList = t.active_alarms || [];
+  const pCount = t.problem_count !== undefined ? t.problem_count : activeAlarmsList.length;
+  const nowMs = Date.now();
+
+  if (pCount >= 2) {
+    // Multiple problems arose: warning chime (rate-limited every 2.5s)
+    if (nowMs - lastAudioAlertTime > 2500) {
+      lastAudioAlertTime = nowMs;
+      playMultiProblemChime();
+    }
+  } else if (pCount === 1) {
+    // Single problem arose: audible ping alert (rate-limited every 2.0s)
+    if (nowMs - lastAudioAlertTime > 2000) {
+      lastAudioAlertTime = nowMs;
+      playPingAlert();
+    }
+  }
+  lastAlertProblemCount = pCount;
+
+  // 7. Update Chart Buffers & Canvas Redraw
   coastSlopeMarkers = t.slope_markers || [];
   appendChartData(t.rpm || 0, t.i_ma || 0, t.vib_g || 0, t.temp_c || 25.0);
 

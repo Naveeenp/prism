@@ -125,12 +125,17 @@ class DCMotorPhysicsSimulator:
             self.deceleration_rad_s2 = 0.0
             current_rpm = 0.0
         else:
-            target_omega = (self.commanded_pwm_pct / 100.0) * (MOTOR_MAX_NO_LOAD_RPM * 2.0 * math.pi / 60.0)
+            base_target = (self.commanded_pwm_pct / 100.0) * (MOTOR_MAX_NO_LOAD_RPM * 2.0 * math.pi / 60.0)
+            # Bearing drag friction penalty reduces running RPM
+            if self.fault_bearing_drag and base_target > 0.0:
+                target_omega = base_target * 0.72 # 28% speed drop under drag
+            else:
+                target_omega = base_target
 
             if self.commanded_pwm_pct <= 0.0:
                 self.is_coasting = True
                 # If bearing drag fault is active, decay rate is much faster
-                tau_decay = 0.40 if self.fault_bearing_drag else TAU_COAST_SEC
+                tau_decay = 0.35 if self.fault_bearing_drag else TAU_COAST_SEC
                 decay = math.exp(-dt / tau_decay)
                 self.omega_rad_s *= decay
                 if self.omega_rad_s < 0.5:
@@ -148,8 +153,10 @@ class DCMotorPhysicsSimulator:
         # Optical pulse interval calculation
         if current_rpm > 5.0:
             pulse_interval_us = int(15000000.0 / current_rpm)
+            pulses_in_window = int((current_rpm / 60.0) * PULSES_PER_REV * dt)
         else:
             pulse_interval_us = 0
+            pulses_in_window = 0
 
         # ----------------------------------------------------------------------
         # 2. Electrical Current & Voltage Model
@@ -160,21 +167,22 @@ class DCMotorPhysicsSimulator:
 
         if self.fault_stall and self.commanded_pwm_pct > 0.0:
             # Stall causes huge current surge (direct armature DC resistance draw)
-            current_ma = 1150.0 + random.gauss(0.0, 10.0)
+            current_ma = 1180.0 + random.gauss(0.0, 10.0)
         elif self.commanded_pwm_pct <= 0.0 and current_rpm < 10.0:
             current_ma = 18.0 + random.gauss(0.0, 1.0) # Quiescent idle
         else:
             load_ma = FULL_LOAD_CURRENT_MA * (self.commanded_pwm_pct / 100.0)
-            current_ma = BASE_IDLE_CURRENT_MA + load_ma + inrush_current + self.load_adder_ma + random.gauss(0.0, 4.0)
+            bearing_adder = 160.0 if self.fault_bearing_drag else 0.0
+            current_ma = BASE_IDLE_CURRENT_MA + load_ma + inrush_current + self.load_adder_ma + bearing_adder + random.gauss(0.0, 4.0)
 
         # Fault Injection: Overcurrent
         if self.fault_overcurrent:
-            current_ma += 380.0 # Force current past 950mA alarm threshold
+            current_ma += 420.0 # Force current well past 950mA alarm threshold
 
         current_ma = max(0.0, current_ma)
 
         # Supply Voltage & Sag
-        base_v = 9.8 if self.fault_voltage_drop else NOMINAL_BUS_VOLTAGE_V
+        base_v = 9.2 if self.fault_voltage_drop else NOMINAL_BUS_VOLTAGE_V
         bus_voltage_v = base_v - ((current_ma / 1000.0) * SOURCE_IMPEDANCE_OHMS)
         bus_voltage_v += random.gauss(0.0, 0.02)
         power_mw = bus_voltage_v * current_ma
@@ -187,17 +195,20 @@ class DCMotorPhysicsSimulator:
         
         # Fault Injection: Thermal Runaway
         if self.fault_overheat:
-            delta_t_max += 28.0 # Elevate equilibrium temperature above 55°C
+            delta_t_max += 32.0 # Elevate equilibrium temperature above 57°C
+            # Accelerated thermal time constant during simulated overheat
+            thermal_step = 1.0 - math.exp(-dt / 6.0)
+        else:
+            thermal_step = 1.0 - math.exp(-dt / THERMAL_TIME_CONST_SEC)
 
         target_temp = self.ambient_temp_c + delta_t_max
-        thermal_step = 1.0 - math.exp(-dt / THERMAL_TIME_CONST_SEC)
         self.casing_temp_c += (target_temp - self.casing_temp_c) * thermal_step
         measured_temp_c = self.casing_temp_c + random.gauss(0.0, 0.05)
 
         # ----------------------------------------------------------------------
         # 4. Harmonic Vibration Signature
         # ----------------------------------------------------------------------
-        rotational_freq_hz = current_rpm / 60.0
+        rotational_freq_hz = max(1.0, current_rpm / 60.0)
         omega_shaft = 2.0 * math.pi * rotational_freq_hz
         speed_ratio = current_rpm / MOTOR_MAX_NO_LOAD_RPM
 
@@ -207,14 +218,17 @@ class DCMotorPhysicsSimulator:
         # Fault Injection: High Vibration / Mechanical Shock
         mult = self.vib_multiplier
         if self.fault_vibration:
-            mult *= 3.2 # Force vibration above 2.0g alarm threshold
+            mult *= 4.5 # Force vibration clearly above 1.8g alarm threshold
+            extra_vib = 1.25 # Static baseline bump
+        else:
+            extra_vib = 0.0
 
         t = self.elapsed_time_s
         vib_x = (a0 * mult * math.sin(omega_shaft * t)) + (a1 * mult * math.sin(2.0 * omega_shaft * t + 0.45)) + random.gauss(0.0, 0.03)
         vib_y = (a0 * mult * math.cos(omega_shaft * t)) + (a1 * mult * math.cos(2.0 * omega_shaft * t + 1.20)) + random.gauss(0.0, 0.03)
         vib_z = 1.0 + (a0 * mult * 0.4 * math.sin(omega_shaft * t + 2.1)) + random.gauss(0.0, 0.02)
         vib_dyn_z = vib_z - 1.0
-        vib_rms_g = math.sqrt((vib_x ** 2) + (vib_y ** 2) + (vib_dyn_z ** 2))
+        vib_rms_g = math.sqrt((vib_x ** 2) + (vib_y ** 2) + (vib_dyn_z ** 2)) + extra_vib
 
         # ----------------------------------------------------------------------
         # 5. Coast-Down Bearing Drag Diagnostics
@@ -319,15 +333,20 @@ class DCMotorPhysicsSimulator:
 
         return {
             "time_s": round(self.elapsed_time_s, 2),
+            "elapsed_sec": round(self.elapsed_time_s, 2),
             "pwm_pct": round(self.commanded_pwm_pct, 1),
             "rpm": round(current_rpm, 1),
+            "speed_rpm": round(current_rpm, 1),
             "omega_rad_s": round(self.omega_rad_s, 2),
             "pulse_us": pulse_interval_us,
+            "pulses_window": pulses_in_window,
             "volts": round(bus_voltage_v, 2),
+            "bus_voltage_v": round(bus_voltage_v, 2),
             "current_ma": round(current_ma, 1),
             "power_mw": round(power_mw, 1),
             "temp_c": round(measured_temp_c, 2),
             "vib_rms_g": round(vib_rms_g, 3),
+            "vibration_rms_g": round(vib_rms_g, 3),
             "accel_x": round(vib_x, 3),
             "accel_y": round(vib_y, 3),
             "accel_z": round(vib_z, 3),
