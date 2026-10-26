@@ -778,6 +778,37 @@ class SCADABackendEngine:
                     f"Driver Power {state} confirmed by hardware"
                 )
 
+            elif line.startswith("ACK:COAST_CUTOFF"):
+                # ESP32 has finished 2.0s spin-up and cut PWM output to 0 (High-Z)
+                now_s = time.time()
+                self.coast_analyzer.start_test(now_s)
+                self._add_alarm(
+                    AlarmSeverity.NORMAL,
+                    "COAST_TEST",
+                    "Hardware PWM Cutoff Confirmed: Coast-Down Recording Active"
+                )
+
+            elif line.startswith("ACK:COAST_STOP:"):
+                # Example: ACK:COAST_STOP:dt_ms=2150
+                payload = line.split("ACK:COAST_STOP:")[1].strip()
+                fields = dict(item.split("=") for item in payload.split(",") if "=" in item)
+                hw_dt_s = None
+                if "dt_ms" in fields:
+                    try:
+                        hw_dt_s = round(float(fields["dt_ms"]) / 1000.0, 3)
+                    except ValueError:
+                        pass
+
+                if self.coast_analyzer.is_active:
+                    results = self.coast_analyzer.finalize_test()
+                    if results.get("success"):
+                        cond_msg = results["condition"]
+                        if hw_dt_s is not None:
+                            cond_msg += f" (Firmware Timer: {hw_dt_s}s)"
+                        self._add_alarm(results["severity"], "COAST_TEST", cond_msg)
+                        self.latest_telemetry["bci_pct"] = results["bci_pct"]
+                        self.latest_telemetry["coast_duration_s"] = results["coast_duration_s"]
+
             elif line.startswith("ERR:WATCHDOG_TIMEOUT:"):
                 self.latest_telemetry["driver_pwr"] = False
                 self.sim_speed_pwm = 0.0
@@ -863,31 +894,48 @@ class SCADABackendEngine:
         self._add_alarm(AlarmSeverity.NORMAL, "DIAGNOSTIC", "Initiating Automated Coast-Down Spin Test...")
 
         def _coast_sequence():
-            # 1. Ramp to 75% baseline speed
-            self.set_target_speed(75.0)
-            time.sleep(2.0) # Wait for steady state
-
-            # 2. Trigger high-Z coasting
-            self._add_alarm(AlarmSeverity.NORMAL, "DIAGNOSTIC", "Cutting PWM to High-Z Coast (ENA=0, IN1=0, IN2=0)")
-            now_s = time.time()
-            self.coast_analyzer.start_test(now_s)
-
             if self.serial_worker.is_connected:
+                # In hardware mode: ESP32 manages 2.0s spin-up at 75% then cuts PWM to high-Z.
+                # Do NOT start coast analyzer here; wait for ACK:COAST_CUTOFF from firmware.
                 self.serial_worker.send_command("CMD:RUN_COAST_TEST")
+
+                # Failsafe timeout watcher (in case hardware ACK is lost)
+                start_wait = time.time()
+                while time.time() - start_wait < 8.0:
+                    time.sleep(0.1)
+                    if not self.coast_analyzer.is_active and start_wait > 3.0:
+                        break
+
+                # If test is still marked active after timeout, finalize gracefully
+                if self.coast_analyzer.is_active:
+                    results = self.coast_analyzer.finalize_test()
+                    if results.get("success"):
+                        self._add_alarm(results["severity"], "COAST_TEST", results["condition"])
             else:
+                # In offline simulation mode:
+                # 1. Ramp to 75% baseline speed
+                self.set_target_speed(75.0)
+                time.sleep(2.0) # Wait for steady state
+
+                # 2. Trigger high-Z coasting
+                self._add_alarm(AlarmSeverity.NORMAL, "DIAGNOSTIC", "Cutting PWM to High-Z Coast (Simulation)")
+                now_s = time.time()
+                self.coast_analyzer.start_test(now_s)
                 self.sim_coast_active = True
                 self.sim_speed_pwm = 0.0
 
-            # 3. Wait for coast-down to complete
-            cutoff_start = time.time()
-            while time.time() - cutoff_start < 4.0:
-                if not self.coast_analyzer.is_active:
-                    break
-                time.sleep(0.1)
+                # 3. Wait for coast-down to complete
+                cutoff_start = time.time()
+                while time.time() - cutoff_start < 4.0:
+                    if not self.coast_analyzer.is_active:
+                        break
+                    time.sleep(0.1)
 
-            results = self.coast_analyzer.finalize_test()
-            if results.get("success"):
-                self._add_alarm(results["severity"], "COAST_TEST", results["condition"])
+                results = self.coast_analyzer.finalize_test()
+                if results.get("success"):
+                    self._add_alarm(results["severity"], "COAST_TEST", results["condition"])
+                    self.latest_telemetry["bci_pct"] = results["bci_pct"]
+                    self.latest_telemetry["coast_duration_s"] = results["coast_duration_s"]
 
         threading.Thread(target=_coast_sequence, daemon=True).start()
 
