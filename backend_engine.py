@@ -354,6 +354,8 @@ class TelemetryCSVLogger:
             return
 
         with self.lock:
+            if not self.file_handle or self.file_handle.closed:
+                return
             try:
                 now_iso = datetime.now().isoformat()
                 elapsed = round(time.time() - self.start_time, 3)
@@ -603,6 +605,8 @@ class SCADABackendEngine:
 
         # System State & High-Fidelity Physics Simulator
         self.is_sim_mode: bool = False
+        self.driver_armed: bool = False
+        self.stall_timer_start: Optional[float] = None
         self.sim_speed_pwm: float = 0.0
         self.sim_coast_active: bool = False
         self.simulator = DCMotorPhysicsSimulator()
@@ -671,7 +675,7 @@ class SCADABackendEngine:
             ra_val = self.ra_estimator.last_calculated_ra or 2.40
             bci_val = self.coast_analyzer.last_bci_pct
 
-            driver_pwr_state = bool(frame.get("driver_pwr", 1 if self.sim_speed_pwm > 0 else 0))
+            driver_pwr_state = bool(frame.get("driver_pwr", 1 if self.driver_armed else 0))
 
             self.latest_telemetry = {
                 "mode": frame.get("mode", "RUN"),
@@ -747,13 +751,19 @@ class SCADABackendEngine:
                 overall = AlarmSeverity.CAUTION
             self._add_alarm(AlarmSeverity.CAUTION, "VIBRATION_RMS", msg)
 
-        # Rotor Jam / Stall check (commanded speed > 15% but rpm near 0)
+        # Rotor Jam / Stall check (commanded speed > 15% but rpm near 0 for > 1.5s)
         curr_duty = frame.get("duty", int((self.sim_speed_pwm / 100.0) * 255.0))
+        now_t = time.time()
         if curr_duty > 35 and rpm < self.LIMITS["stall_rpm"]:
-            msg = f"Rotor Jam / Stall: {rpm:.0f} RPM with Duty {curr_duty}"
-            active_alarms.append(msg)
-            overall = AlarmSeverity.CRITICAL
-            self._add_alarm(AlarmSeverity.CRITICAL, "ROTOR_STALL", msg)
+            if self.stall_timer_start is None:
+                self.stall_timer_start = now_t
+            elif (now_t - self.stall_timer_start) >= 1.5:
+                msg = f"Rotor Jam / Stall: {rpm:.0f} RPM with Duty {curr_duty} (Duration > 1.5s)"
+                active_alarms.append(msg)
+                overall = AlarmSeverity.CRITICAL
+                self._add_alarm(AlarmSeverity.CRITICAL, "ROTOR_STALL", msg)
+        else:
+            self.stall_timer_start = None
 
         # Multiple Problems Protection & Auto-Trip
         # If 2 or more problems arise, limit or turn off the motor to prevent catastrophic damage
@@ -865,6 +875,7 @@ class SCADABackendEngine:
     def set_driver_power(self, enable: bool):
         """Enables or disables L298N driver power / arming: CMD:DRIVER_POWER:<ON|OFF>"""
         with self.lock:
+            self.driver_armed = enable
             self.latest_telemetry["driver_pwr"] = enable
             if not enable:
                 self.sim_speed_pwm = 0.0
@@ -891,6 +902,10 @@ class SCADABackendEngine:
         duty_8bit = int((pct / 100.0) * 255.0)
 
         with self.lock:
+            # If motor speed > 0 is selected and driver is not armed, automatically arm it
+            if pct > 0.0 and not self.driver_armed:
+                self.driver_armed = True
+                self.latest_telemetry["driver_pwr"] = True
             self.sim_speed_pwm = pct
             self.sim_coast_active = False
 
@@ -904,8 +919,10 @@ class SCADABackendEngine:
     def emergency_stop(self):
         """Immediately zeroes drive output: CMD:ESTOP"""
         with self.lock:
+            self.driver_armed = False
             self.sim_speed_pwm = 0.0
             self.sim_coast_active = True
+            self.latest_telemetry["driver_pwr"] = False
 
         if self.serial_worker.is_connected:
             self.serial_worker.send_command("CMD:ESTOP")
@@ -1048,6 +1065,7 @@ class SCADABackendEngine:
                     "vib_g": round(telem["vibration_rms_g"], 3),
                     "ts_ms": elapsed_ms,
                     "duty": duty_8bit,
+                    "driver_pwr": 1 if self.driver_armed else 0,
                     "seq": int(telem["elapsed_sec"] * 10),
                     "pulses": int(telem["pulses_window"]),
                     "ina_ok": 1,

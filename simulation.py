@@ -26,7 +26,7 @@ TAU_COAST_SEC            = 1.35   # Inertial friction spin-down decay constant
 NOMINAL_BUS_VOLTAGE_V    = 12.0   # 12V DC power source
 SOURCE_IMPEDANCE_OHMS    = 0.45   # Internal resistance causing voltage sag
 BASE_IDLE_CURRENT_MA     = 75.0   # Quiescent no-load motor core current
-FULL_LOAD_CURRENT_MA     = 780.0  # Armature load current at 100% duty
+FULL_LOAD_CURRENT_MA     = 480.0  # Armature load current at 100% duty (nominal safe operating range)
 THERMAL_TIME_CONST_SEC   = 45.0   # Casing thermal dissipation time constant
 
 # Diagnostic Thresholds
@@ -163,7 +163,8 @@ class DCMotorPhysicsSimulator:
         # ----------------------------------------------------------------------
         inrush_current = 0.0
         if self.deceleration_rad_s2 > 0.0:
-            inrush_current = self.deceleration_rad_s2 * 1.25
+            # Soften and clamp inrush current transient during speed steps
+            inrush_current = min(85.0, self.deceleration_rad_s2 * 0.25)
 
         if self.fault_stall and self.commanded_pwm_pct > 0.0:
             # Stall causes huge current surge (direct armature DC resistance draw)

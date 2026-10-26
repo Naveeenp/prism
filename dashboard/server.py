@@ -19,6 +19,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Requ
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
+import logging
+
+logger = logging.getLogger("SCADAWebServer")
 
 # Ensure local workspace imports work reliably
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -194,10 +197,16 @@ async def websocket_telemetry(websocket: WebSocket):
                     engine.trigger_ra_measurement()
                 elif action == "coast_test":
                     engine.trigger_coast_down_test()
+                elif action == "inject_fault":
+                    faults = data.get("faults", {})
+                    if isinstance(faults, dict):
+                        engine.inject_faults(faults)
+                elif action == "clear_faults":
+                    engine.clear_all_faults()
         except (WebSocketDisconnect, asyncio.CancelledError):
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"WebSocket receive error: {e}")
 
     send_task = asyncio.create_task(_send_loop())
     recv_task = asyncio.create_task(_recv_loop())

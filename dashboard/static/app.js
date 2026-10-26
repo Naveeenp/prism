@@ -356,14 +356,24 @@ async function toggleFault(faultName) {
     }
   }
 
+  const payload = {
+    action: "inject_fault",
+    faults: { [faultName]: activeFaults[faultName] }
+  };
+
+  // If websocket is active, send immediately over low-latency stream
+  if (telemetrySocket && telemetrySocket.readyState === WebSocket.OPEN) {
+    try {
+      telemetrySocket.send(JSON.stringify(payload));
+    } catch (e) {}
+  }
+
+  // Also dispatch REST endpoint
   try {
     await fetch("/api/control", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "inject_fault",
-        faults: { [faultName]: activeFaults[faultName] }
-      })
+      body: JSON.stringify(payload)
     });
   } catch (e) {
     console.error("Fault injection error:", e);
@@ -377,11 +387,19 @@ async function clearAllFaults() {
     if (btn) btn.classList.remove("fault-active");
   }
 
+  const payload = { action: "clear_faults" };
+
+  if (telemetrySocket && telemetrySocket.readyState === WebSocket.OPEN) {
+    try {
+      telemetrySocket.send(JSON.stringify(payload));
+    } catch (e) {}
+  }
+
   try {
     await fetch("/api/control", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "clear_faults" })
+      body: JSON.stringify(payload)
     });
   } catch (e) {
     console.error("Clear faults error:", e);
