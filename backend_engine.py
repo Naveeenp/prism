@@ -522,7 +522,12 @@ class ESP32SerialWorker(threading.Thread):
                     "temp_c": float(raw_json.get("temp_c", 25.0)),
                     "vib_g": float(raw_json.get("vib_g", raw_json.get("vib_rms_g", 0.0))),
                     "ts_ms": int(raw_json.get("ts_ms", raw_json.get("time_ms", 0))),
-                    "driver_pwr": int(raw_json.get("driver_pwr", 1))
+                    "driver_pwr": int(raw_json.get("driver_pwr", 1)),
+                    "duty": int(raw_json.get("duty", 0)),
+                    "seq": int(raw_json.get("seq", 0)),
+                    "pulses": int(raw_json.get("pulses", 0)),
+                    "ina_ok": int(raw_json.get("ina_ok", 1)),
+                    "mpu_ok": int(raw_json.get("mpu_ok", 1))
                 }
             except (json.JSONDecodeError, ValueError) as e:
                 logger.debug(f"JSON parse error on line: {line} ({e})")
@@ -647,7 +652,12 @@ class SCADABackendEngine:
                 "coast_duration_s": self.coast_analyzer.last_coast_duration_s,
                 "status": overall_status,
                 "active_alarms": active_alarms,
-                "driver_pwr": driver_pwr_state
+                "driver_pwr": driver_pwr_state,
+                "duty": frame.get("duty", int((self.sim_speed_pwm / 100.0) * 255.0) if not self.serial_worker.is_connected else 0),
+                "seq": frame.get("seq", 0),
+                "pulses": frame.get("pulses", 0),
+                "ina_ok": bool(frame.get("ina_ok", 1)),
+                "mpu_ok": bool(frame.get("mpu_ok", 1))
             }
 
             # 5. Log to CSV

@@ -14,8 +14,8 @@
        * IN2 (Direction 2)   : GPIO 26
        * COMMON GROUND       : Connect ESP32 GND to L298N GND and Motor PSU GND!
    - Optical Shaft Encoder (HC-89):
-       * SIGNAL (D0/OUT)     : GPIO 18 (Interrupt on FALLING, with pulse counting)
-       * Encoder Disc        : 20-Slot Disc (PULSES_PER_REV = 20)
+       * SIGNAL (D0/OUT)     : GPIO 18 (Interrupt on CHANGE, counting rising & falling transitions)
+       * Encoder Disc        : 4-Slot Disc (PULSES_PER_REV = 4 slots * 2 edges = 8 edges/rev)
        * VCC                 : 3.3V or 5V (Ensure GND is shared)
    - I2C Bus (Fast-Mode 400 kHz):
        * SDA                 : GPIO 21
@@ -53,12 +53,17 @@
 // =============================================================================
 // CONFIGURATION CONSTANTS
 // =============================================================================
-#define PULSES_PER_REV       20       // 20-slot optical encoder disc
+// Optical encoder: 4 slots with CHANGE mode IRQ (both rising and falling edges) = 8 edges/rev
+#define ENCODER_SLOTS_PER_REV 4
+#define EDGES_PER_SLOT        2        // CHANGE mode triggers on rising & falling edges
+#define PULSES_PER_REV        (ENCODER_SLOTS_PER_REV * EDGES_PER_SLOT) // 8 effective counts per rev
+
 // 1 kHz provides high starting torque and easily passes through L298N optocouplers/buffers
-#define PWM_FREQ_HZ          1000     
-#define PWM_RESOLUTION_BITS  8        // 8-bit resolution (0 - 255)
-#define PWM_LEDC_CHANNEL     0        // LEDC Channel 0
-#define TELEMETRY_PERIOD_MS  100      // 10 Hz Telemetry Transmission Rate
+#define PWM_FREQ_HZ           1000     
+#define PWM_RESOLUTION_BITS   8        // 8-bit resolution (0 - 255)
+#define PWM_LEDC_CHANNEL      0        // LEDC Channel 0
+#define TELEMETRY_PERIOD_MS   100      // 10 Hz Telemetry Transmission Rate
+#define WATCHDOG_TIMEOUT_MS   3000     // 3.0s failsafe auto-stop if serial communication drops
 
 // =============================================================================
 // HARDWARE SENSOR & DISPLAY OBJECTS
@@ -91,12 +96,14 @@ String   s_current_mode      = "STANDBY";
 float    s_rpm               = 0.0f;
 float    s_latest_temp_c     = 25.0f;
 
-// Non-blocking timer schedulers
-uint32_t s_last_telemetry_ms = 0;
+// Non-blocking timer schedulers & watchdog
+uint32_t s_last_telemetry_ms  = 0;
 uint32_t s_last_speed_calc_ms = 0;
-uint32_t s_last_temp_req_ms  = 0;
-uint32_t s_last_hb_toggle_ms = 0;
-bool     s_hb_led_state      = false;
+uint32_t s_last_temp_req_ms   = 0;
+uint32_t s_last_hb_toggle_ms  = 0;
+uint32_t s_last_cmd_rx_ms     = 0;     // Timestamp of last valid command for failsafe watchdog
+uint32_t s_telemetry_seq      = 0;     // Incremental packet sequence counter
+bool     s_hb_led_state       = false;
 
 // Coast test state machine
 enum CoastTestState { COAST_STATE_IDLE, COAST_STATE_SPINUP, COAST_STATE_COASTING };
@@ -213,8 +220,9 @@ void calculateSpeed() {
   float pulse_rpm = ((float)pulses / (float)PULSES_PER_REV) * (60000.0f / (float)dt_ms);
 
   // Method 2: High-resolution pulse period interval
-  // RPM = 3,000,000 / interval_us (for PPR=20)
-  float period_rpm = (interval > 0) ? (3000000.0f / (float)interval) : 0.0f;
+  // RPM = (60 * 1,000,000) / (PULSES_PER_REV * interval_us)
+  // For PPR=8, numerator is 60,000,000 / 8 = 7,500,000.0f
+  float period_rpm = (interval > 0) ? ((60000000.0f / (float)PULSES_PER_REV) / (float)interval) : 0.0f;
 
   float computed_rpm = 0.0f;
   if (pulses >= 2) {
@@ -222,7 +230,8 @@ void calculateSpeed() {
   } else if (pulses == 1 && period_rpm > 0.0f && period_rpm < 12000.0f) {
     computed_rpm = period_rpm;
   } else if (pulses == 0 && elapsed_since_pulse_us < 350000) {
-    computed_rpm = s_rpm * 0.70f;
+    // Graceful coast-down tracking without synthetic 0.70 artificial collapse
+    computed_rpm = s_rpm;
   }
 
   // Single-pole IIR filter for jitter suppression
@@ -336,6 +345,9 @@ void processSerialCommands() {
     cmd.trim();
     if (cmd.length() == 0) continue;
 
+    // Reset communication watchdog on any valid command received
+    s_last_cmd_rx_ms = millis();
+
     // Command 1: Driver Master Power Switch: CMD:DRIVER_POWER:<ON|OFF|1|0>
     if (cmd.startsWith("CMD:DRIVER_POWER:")) {
       String state = cmd.substring(17);
@@ -348,10 +360,14 @@ void processSerialCommands() {
     }
     // Command 2: Speed Setpoint: CMD:SET_SPEED:<0-255>
     else if (cmd.startsWith("CMD:SET_SPEED:")) {
-      int duty = cmd.substring(14).toInt();
-      duty = constrain(duty, 0, 255);
-      setMotorDuty((uint8_t)duty, true);
-      Serial.printf("ACK:SET_SPEED:%d\r\n", duty);
+      if (!s_driver_armed) {
+        Serial.println("ERR:DRIVER_DISARMED:ARM_DRIVER_FIRST");
+      } else {
+        int duty = cmd.substring(14).toInt();
+        duty = constrain(duty, 0, 255);
+        setMotorDuty((uint8_t)duty, true);
+        Serial.printf("ACK:SET_SPEED:%d\r\n", duty);
+      }
     }
     // Command 3: Emergency Stop: CMD:ESTOP
     else if (cmd.equalsIgnoreCase("CMD:ESTOP") || cmd.equalsIgnoreCase("STOP")) {
@@ -454,6 +470,7 @@ void setup() {
   s_last_speed_calc_ms = millis();
 
   digitalWrite(PIN_LED_HEARTBEAT, LOW);
+  s_last_cmd_rx_ms = millis(); // Initialize watchdog timer on boot
   Serial.println("ACK:BOOT:ESP32_SCADA_SYSTEM_READY");
 }
 
@@ -465,6 +482,13 @@ void loop() {
 
   // 1. Process Incoming Serial Commands
   processSerialCommands();
+
+  // Communication Failsafe Watchdog: disarm and stop motor if no command received for > 3.0s while running
+  if (s_driver_armed && s_current_duty_8bit > 0 && (now_ms - s_last_cmd_rx_ms > WATCHDOG_TIMEOUT_MS)) {
+    setMotorDuty(0);
+    s_coast_test_state = COAST_STATE_IDLE;
+    Serial.println("ERR:WATCHDOG_TIMEOUT:MOTOR_STOPPED");
+  }
 
   // 2. Service Coast-Down Test Automation
   if (s_coast_test_state == COAST_STATE_SPINUP) {
@@ -501,6 +525,7 @@ void loop() {
   // 5. Periodic 10 Hz Telemetry Dispatch
   if (now_ms - s_last_telemetry_ms >= TELEMETRY_PERIOD_MS) {
     s_last_telemetry_ms = now_ms;
+    s_telemetry_seq++;
 
     // A. Calculate Speed (Dual window + interval)
     calculateSpeed();
@@ -522,7 +547,8 @@ void loop() {
       float ax_g = a.acceleration.x / 9.80665f;
       float ay_g = a.acceleration.y / 9.80665f;
       float az_g = a.acceleration.z / 9.80665f;
-      float dyn_z = (az_g > 0.0f) ? (az_g - 1.0f) : (az_g + 1.0f);
+      // Sensor mounted parallel with pins pointing upward (towards sky): static gravity is along +Z (~1.0G)
+      float dyn_z = az_g - 1.0f;
       vib_g = sqrtf((ax_g * ax_g) + (ay_g * ay_g) + (dyn_z * dyn_z));
     }
 
@@ -530,8 +556,8 @@ void loop() {
     updateOLED(v_bus, i_ma, s_latest_temp_c, vib_g);
 
     // E. Emit Strict JSON Telemetry Frame Over Serial
-    // Expected Frame: {"mode": "RUN_75", "v_bus": 12.04, "i_ma": 320.5, "rpm": 1820.0, "temp_c": 31.4, "vib_g": 0.18, "ts_ms": 104250, "driver_pwr": 1}
-    Serial.printf("{\"mode\": \"%s\", \"v_bus\": %.2f, \"i_ma\": %.1f, \"rpm\": %.1f, \"temp_c\": %.1f, \"vib_g\": %.2f, \"ts_ms\": %lu, \"driver_pwr\": %d}\r\n",
+    // Enhanced Schema: mode, v_bus, i_ma, rpm, temp_c, vib_g, ts_ms, driver_pwr, duty, seq, pulses, ina_ok, mpu_ok
+    Serial.printf("{\"mode\": \"%s\", \"v_bus\": %.2f, \"i_ma\": %.1f, \"rpm\": %.1f, \"temp_c\": %.1f, \"vib_g\": %.2f, \"ts_ms\": %lu, \"driver_pwr\": %d, \"duty\": %d, \"seq\": %lu, \"pulses\": %lu, \"ina_ok\": %d, \"mpu_ok\": %d}\r\n",
                   s_current_mode.c_str(),
                   v_bus,
                   i_ma,
@@ -539,6 +565,11 @@ void loop() {
                   s_latest_temp_c,
                   vib_g,
                   now_ms,
-                  s_driver_armed ? 1 : 0);
+                  s_driver_armed ? 1 : 0,
+                  s_current_duty_8bit,
+                  s_telemetry_seq,
+                  s_total_pulses,
+                  s_ina_online ? 1 : 0,
+                  s_mpu_online ? 1 : 0);
   }
 }
