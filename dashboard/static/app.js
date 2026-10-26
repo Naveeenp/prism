@@ -28,7 +28,7 @@ let coastSlopeMarkers = [];
 window.addEventListener("DOMContentLoaded", () => {
   initCanvases();
   refreshPorts();
-  startEventSource();
+  startTelemetryStream();
   setInterval(pollAlarms, 1000);
 });
 
@@ -191,31 +191,56 @@ async function triggerCoastTest() {
 }
 
 // =============================================================================
-// SSE REAL-TIME TELEMETRY CONSUMER
+// WEBSOCKET REAL-TIME TELEMETRY CONSUMER
 // =============================================================================
-function startEventSource() {
-  if (!!window.EventSource) {
-    sseSource = new EventSource("/api/telemetry/stream");
-    sseSource.onmessage = (e) => {
-      try {
-        const packet = JSON.parse(e.data);
-        handleTelemetryUpdate(packet);
-      } catch (err) {
-        console.error("SSE parse error:", err);
+let telemetrySocket = null;
+let reconnectTimer = null;
+
+function startTelemetryStream() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${protocol}//${window.location.host}/ws/telemetry`;
+
+  try {
+    telemetrySocket = new WebSocket(wsUrl);
+
+    telemetrySocket.onopen = () => {
+      console.log("WebSocket connection established to", wsUrl);
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
       }
     };
-    sseSource.onerror = () => {
-      // Reconnect automatically
-    };
-  } else {
-    // 10 Hz Polling fallback
-    setInterval(async () => {
+
+    telemetrySocket.onmessage = (event) => {
       try {
-        const res = await fetch("/api/telemetry");
-        const packet = await res.json();
+        const packet = JSON.parse(event.data);
         handleTelemetryUpdate(packet);
-      } catch (e) {}
-    }, 100);
+      } catch (err) {
+        console.error("Telemetry JSON parse error:", err);
+      }
+    };
+
+    telemetrySocket.onclose = () => {
+      console.warn("WebSocket closed. Attempting reconnect in 1.5s...");
+      scheduleReconnect();
+    };
+
+    telemetrySocket.onerror = (err) => {
+      console.error("WebSocket error:", err);
+      try { telemetrySocket.close(); } catch (e) {}
+    };
+  } catch (err) {
+    console.error("Failed to initiate WebSocket:", err);
+    scheduleReconnect();
+  }
+}
+
+function scheduleReconnect() {
+  if (!reconnectTimer) {
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      startTelemetryStream();
+    }, 1500);
   }
 }
 

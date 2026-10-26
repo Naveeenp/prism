@@ -27,9 +27,20 @@ def open_browser():
     webbrowser.open(url)
 
 if __name__ == "__main__":
+    host = "127.0.0.1"
+    if "--all-interfaces" in sys.argv:
+        host = "0.0.0.0"
+
+    for i, arg in enumerate(sys.argv):
+        if arg == "--port" and i + 1 < len(sys.argv):
+            try:
+                PORT = int(sys.argv[i + 1])
+            except ValueError:
+                pass
+
     if "--no-browser" not in sys.argv:
         t = threading.Thread(target=open_browser, daemon=True)
         t.start()
 
-    print(f"Starting DC Motor Health Monitoring Localhost SCADA Dashboard on port {PORT}...")
-    start_server(host="0.0.0.0", port=PORT)
+    print(f"Starting DC Motor Health Monitoring Localhost SCADA Dashboard on {host}:{PORT}...")
+    start_server(host=host, port=PORT)
