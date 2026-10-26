@@ -61,8 +61,35 @@
     <!-- LEFT COLUMN: CONTROLS & DIGITAL READOUTS -->
     <div class="col-left">
 
-      <!-- 2. OPERATING CONTROL PANEL -->
+      <!-- 2. EQUIPMENT & DIAGNOSTIC STATUS PANEL -->
       <section class="scada-panel">
+        <div class="panel-header">1. EQUIPMENT &amp; DIAGNOSTIC STATUS</div>
+        <div class="panel-body status-summary-grid">
+          <div class="status-indicator-item">
+            <span class="status-name">SERIAL LINK:</span>
+            <span class="badge-status" id="statSerial">DISCONNECTED</span>
+          </div>
+          <div class="status-indicator-item">
+            <span class="status-name">CONTROLLER:</span>
+            <span class="badge-status" id="statController">ESP-32S STANDBY</span>
+          </div>
+          <div class="status-indicator-item">
+            <span class="status-name">OPERATING MODE:</span>
+            <span class="badge-status" id="statMode">IDLE</span>
+          </div>
+          <div class="status-indicator-item">
+            <span class="status-name">CURRENT TEST:</span>
+            <span class="badge-status" id="statActiveTest">READY</span>
+          </div>
+          <div class="status-indicator-item">
+            <span class="status-name">DATA STALENESS:</span>
+            <span class="badge-status" id="statStaleness">ONLINE (0.0s)</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. OPERATING CONTROL PANEL -->
+      <section class="scada-panel" style="margin-top: 12px;">
         <div class="panel-header">2. OPERATING CONTROL PANEL</div>
         <div class="panel-body">
           <div class="driver-power-container">
@@ -75,6 +102,15 @@
             </button>
           </div>
 
+          <!-- Speed Slider (0 - 100%) -->
+          <div class="control-section-label" style="margin-top: 14px; display: flex; justify-content: space-between;">
+            <span>PROPORTIONAL SPEED CONTROL:</span>
+            <span id="speedSliderVal" style="color: #00E5FF; font-family: var(--font-mono); font-weight: bold;">0% (0 / 255)</span>
+          </div>
+          <div class="slider-row">
+            <input type="range" min="0" max="100" value="0" id="speedSlider" class="scada-slider" oninput="onSpeedSliderChange(this.value)">
+          </div>
+
           <div class="control-section-label" style="margin-top: 12px;">TARGET SPEED PRESETS (LEDC PWM):</div>
           <div class="speed-btn-grid">
             <button type="button" class="btn-speed btn-idle" onclick="setSpeed(0)">IDLE / 0%</button>
@@ -85,24 +121,36 @@
 
           <div class="control-section-label" style="margin-top: 14px;">AUTOMATED DIAGNOSTIC ROUTINES:</div>
           <div class="diag-btn-grid">
-            <button type="button" class="btn-diag btn-ra" onclick="triggerRaTest()">
+            <button type="button" class="btn-diag btn-ra" id="btnRaTest" onclick="triggerRaTest()">
               [ MEASURE Ra ]
             </button>
-            <button type="button" class="btn-diag btn-coast" onclick="triggerCoastTest()">
+            <button type="button" class="btn-diag btn-coast" id="btnCoastTest" onclick="triggerCoastTest()">
               [ START COAST-DOWN TEST ]
             </button>
+          </div>
+
+          <!-- Fault Injection Panel (Simulation Engine) -->
+          <div class="control-section-label" style="margin-top: 16px; color: #FFB300;">FAULT INJECTION LAB [SIMULATION MODE]:</div>
+          <div class="fault-btn-grid">
+            <button type="button" class="btn-fault" id="fltOverheat" onclick="toggleFault('overheat')">OVERHEAT</button>
+            <button type="button" class="btn-fault" id="fltOvercurrent" onclick="toggleFault('overcurrent')">OVERCURRENT</button>
+            <button type="button" class="btn-fault" id="fltStall" onclick="toggleFault('stall')">ROTOR JAM / STALL</button>
+            <button type="button" class="btn-fault" id="fltBearing" onclick="toggleFault('bearing_drag')">BEARING DRAG</button>
+            <button type="button" class="btn-fault" id="fltVib" onclick="toggleFault('vibration')">HIGH VIBRATION</button>
+            <button type="button" class="btn-fault" id="fltVoltDrop" onclick="toggleFault('voltage_drop')">VOLTAGE SAG</button>
+            <button type="button" class="btn-fault btn-fault-clear" onclick="clearAllFaults()">CLEAR ALL FAULTS</button>
           </div>
         </div>
       </section>
 
-      <!-- 3. DIGITAL PROCESS VALUES (ENGINEERING READOUTS) -->
+      <!-- 4. DIGITAL PROCESS VALUES (ENGINEERING READOUTS) -->
       <section class="scada-panel" style="margin-top: 12px; flex: 1;">
         <div class="panel-header">3. DIGITAL PROCESS VALUES</div>
-        <div class="panel-body process-readouts-grid">
+        <div class="panel-body process-readouts-grid" id="readoutContainer">
 
           <!-- Voltage -->
           <div class="readout-card">
-            <div class="readout-tag">VOLTAGE (Vt)</div>
+            <div class="readout-tag">BUS VOLTAGE (VIN− to GND)</div>
             <div class="readout-val-row">
               <span class="readout-num" id="valVBus">--.--</span>
               <span class="readout-unit">V</span>
@@ -145,6 +193,15 @@
             </div>
           </div>
 
+          <!-- PWM Duty -->
+          <div class="readout-card">
+            <div class="readout-tag">PWM DUTY CYCLE</div>
+            <div class="readout-val-row">
+              <span class="readout-num" id="valDuty">0</span>
+              <span class="readout-unit">/ 255</span>
+            </div>
+          </div>
+
           <!-- Armature Resistance -->
           <div class="readout-card">
             <div class="readout-tag">CALCULATED RESISTANCE (Ra)</div>
@@ -177,10 +234,10 @@
 
     </div>
 
-    <!-- RIGHT COLUMN: STRIP CHARTS & ALARM LEDGER -->
+    <!-- RIGHT COLUMN: STRIP CHARTS, TELEMETRY DIAGNOSTICS & ALARM LEDGER -->
     <div class="col-right">
 
-      <!-- 4. STRIP-CHART TRENDS -->
+      <!-- 5. STRIP-CHART TRENDS -->
       <section class="scada-panel">
         <div class="panel-header">4. STRIP-CHART TRENDS (REAL-TIME 2D LINE PLOTS)</div>
         <div class="panel-body charts-wrapper">
@@ -189,29 +246,69 @@
           <div class="chart-box">
             <div class="chart-header">
               <span class="chart-title">PLOT 1: SHAFT SPEED (RPM) vs TIME [COAST-DOWN DECELERATION SLOPE]</span>
-              <span class="chart-legend" style="color: #00E5FF;">&block; RPM</span>
+              <span class="chart-legend" style="color: #00E5FF;">&block; RPM (0-2500)</span>
             </div>
-            <canvas id="chartSpeed" height="150"></canvas>
+            <canvas id="chartSpeed" height="135"></canvas>
           </div>
 
           <!-- Plot 2: Current & Vibration vs Time -->
-          <div class="chart-box" style="margin-top: 10px;">
+          <div class="chart-box" style="margin-top: 8px;">
             <div class="chart-header">
               <span class="chart-title">PLOT 2: CURRENT (mA) &amp; VIBRATION (G) vs TIME</span>
               <div class="chart-legend-group">
-                <span class="chart-legend" style="color: #FFB300;">&block; Current (mA)</span>
+                <span class="chart-legend" style="color: #FFB300;">&block; Current (0-1000 mA)</span>
                 <span class="chart-legend" style="color: #E040FB; margin-left: 12px;">&block; Vibration (G x400)</span>
               </div>
             </div>
-            <canvas id="chartElectVib" height="150"></canvas>
+            <canvas id="chartElectVib" height="135"></canvas>
+          </div>
+
+          <!-- Plot 3: Temperature Trend vs Time -->
+          <div class="chart-box" style="margin-top: 8px;">
+            <div class="chart-header">
+              <span class="chart-title">PLOT 3: CASING SURFACE TEMPERATURE vs TIME</span>
+              <span class="chart-legend" style="color: #FF7043;">&block; Temp (0-80°C)</span>
+            </div>
+            <canvas id="chartTemp" height="110"></canvas>
           </div>
 
         </div>
       </section>
 
-      <!-- 5. ALARM & EVENT LEDGER -->
-      <section class="scada-panel" style="margin-top: 12px;">
-        <div class="panel-header">5. THRESHOLD ALARM &amp; EVENT LEDGER</div>
+      <!-- 6. TELEMETRY & HARDWARE DIAGNOSTICS PANEL -->
+      <section class="scada-panel" style="margin-top: 10px;">
+        <div class="panel-header">5. TELEMETRY &amp; HARDWARE DIAGNOSTICS</div>
+        <div class="panel-body telemetry-diag-grid">
+          <div class="diag-stat-card">
+            <span class="diag-stat-label">PACKET RATE:</span>
+            <span class="diag-stat-val" id="diagPktRate">10.0 Hz</span>
+          </div>
+          <div class="diag-stat-card">
+            <span class="diag-stat-label">PACKET SEQ:</span>
+            <span class="diag-stat-val" id="diagPktSeq">0</span>
+          </div>
+          <div class="diag-stat-card">
+            <span class="diag-stat-label">PULSE ACCUM:</span>
+            <span class="diag-stat-val" id="diagPulses">0</span>
+          </div>
+          <div class="diag-stat-card">
+            <span class="diag-stat-label">INA219 SENSOR:</span>
+            <span class="diag-stat-val badge-ok" id="diagInaOk">ONLINE</span>
+          </div>
+          <div class="diag-stat-card">
+            <span class="diag-stat-label">MPU-6050 SENSOR:</span>
+            <span class="diag-stat-val badge-ok" id="diagMpuOk">ONLINE</span>
+          </div>
+          <div class="diag-stat-card">
+            <span class="diag-stat-label">CSV LOGGING:</span>
+            <span class="diag-stat-val badge-ok" id="diagCsvStatus">LOGGING</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 7. ALARM & EVENT LEDGER -->
+      <section class="scada-panel" style="margin-top: 10px;">
+        <div class="panel-header">6. THRESHOLD ALARM &amp; EVENT LEDGER</div>
         <div class="panel-body table-container">
           <table class="scada-table" id="alarmTable">
             <thead>

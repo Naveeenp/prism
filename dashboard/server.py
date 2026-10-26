@@ -138,6 +138,15 @@ async def execute_control(payload: Dict[str, Any]):
         engine.trigger_coast_down_test()
         return {"success": True, "message": "Coast-down test triggered"}
 
+    elif action == "inject_fault":
+        faults = payload.get("faults", {})
+        engine.inject_faults(faults)
+        return {"success": True, "faults": faults}
+
+    elif action == "clear_faults":
+        engine.clear_all_faults()
+        return {"success": True, "message": "All simulation faults cleared"}
+
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 

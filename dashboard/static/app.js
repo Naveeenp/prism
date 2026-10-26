@@ -17,10 +17,16 @@ const chartBuffers = {
   time: [],
   rpm: [],
   current: [],
-  vibration: []
+  vibration: [],
+  temp: []
 };
 
 let coastSlopeMarkers = [];
+let lastTelemetryTime = Date.now();
+let lastPacketCount = 0;
+let lastPacketSeq = 0;
+let packetRateHz = 10.0;
+let lastRateCheckTime = Date.now();
 
 // =============================================================================
 // INITIALIZATION
@@ -143,6 +149,15 @@ function updateDriverPowerUI(active) {
 }
 
 async function setSpeed(pct) {
+  pct = Math.max(0, Math.min(100, pct));
+  const slider = document.getElementById("speedSlider");
+  const label = document.getElementById("speedSliderVal");
+  if (slider) slider.value = pct;
+  if (label) {
+    const duty8bit = Math.round((pct / 100.0) * 255);
+    label.textContent = `${pct}% (${duty8bit} / 255)`;
+  }
+
   try {
     await fetch("/api/control", {
       method: "POST",
@@ -152,6 +167,19 @@ async function setSpeed(pct) {
   } catch (e) {
     console.error("Speed command error:", e);
   }
+}
+
+let sliderDebounceTimer = null;
+function onSpeedSliderChange(val) {
+  const pct = parseInt(val, 10);
+  const duty8bit = Math.round((pct / 100.0) * 255);
+  const label = document.getElementById("speedSliderVal");
+  if (label) label.textContent = `${pct}% (${duty8bit} / 255)`;
+
+  if (sliderDebounceTimer) clearTimeout(sliderDebounceTimer);
+  sliderDebounceTimer = setTimeout(() => {
+    setSpeed(pct);
+  }, 120);
 }
 
 async function sendEStop() {
@@ -187,6 +215,72 @@ async function triggerCoastTest() {
     });
   } catch (e) {
     console.error("Coast test trigger error:", e);
+  }
+}
+
+// =============================================================================
+// FAULT INJECTION LAB (SIMULATION MODE CONTROLS)
+// =============================================================================
+const activeFaults = {
+  overheat: false,
+  overcurrent: false,
+  stall: false,
+  bearing_drag: false,
+  vibration: false,
+  voltage_drop: false
+};
+
+const faultBtnIds = {
+  overheat: "fltOverheat",
+  overcurrent: "fltOvercurrent",
+  stall: "fltStall",
+  bearing_drag: "fltBearing",
+  vibration: "fltVib",
+  voltage_drop: "fltVoltDrop"
+};
+
+async function toggleFault(faultName) {
+  if (activeFaults[faultName] === undefined) return;
+  activeFaults[faultName] = !activeFaults[faultName];
+
+  const btn = document.getElementById(faultBtnIds[faultName]);
+  if (btn) {
+    if (activeFaults[faultName]) {
+      btn.classList.add("fault-active");
+    } else {
+      btn.classList.remove("fault-active");
+    }
+  }
+
+  try {
+    await fetch("/api/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "inject_fault",
+        faults: { [faultName]: activeFaults[faultName] }
+      })
+    });
+  } catch (e) {
+    console.error("Fault injection error:", e);
+  }
+}
+
+async function clearAllFaults() {
+  for (const k in activeFaults) {
+    activeFaults[k] = false;
+    const btn = document.getElementById(faultBtnIds[k]);
+    if (btn) btn.classList.remove("fault-active");
+  }
+
+  try {
+    await fetch("/api/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "clear_faults" })
+    });
+  } catch (e) {
+    console.error("Clear faults error:", e);
   }
 }
 
@@ -245,6 +339,9 @@ function scheduleReconnect() {
 }
 
 function handleTelemetryUpdate(t) {
+  lastTelemetryTime = Date.now();
+  lastPacketCount++;
+
   // 1. Toggle Heartbeat Indicator
   heartbeatToggle = !heartbeatToggle;
   const hbLed = document.getElementById("heartbeatLed");
@@ -253,6 +350,10 @@ function handleTelemetryUpdate(t) {
   } else {
     hbLed.classList.remove("active");
   }
+
+  // Clear stale readouts style if active
+  const readoutContainer = document.getElementById("readoutContainer");
+  if (readoutContainer) readoutContainer.classList.remove("readout-stale");
 
   // Sync Driver Power UI if reported in telemetry
   if (t.driver_pwr !== undefined && t.driver_pwr !== (driverPowerActive ? 1 : 0)) {
@@ -268,6 +369,9 @@ function handleTelemetryUpdate(t) {
   document.getElementById("valRa").textContent = (t.ra_ohms || 2.40).toFixed(2);
   document.getElementById("valCoast").textContent = (t.coast_duration_s || 0.0).toFixed(2);
 
+  const dutyElem = document.getElementById("valDuty");
+  if (dutyElem) dutyElem.textContent = (t.duty !== undefined ? t.duty : 0);
+
   const bciElem = document.getElementById("valBci");
   const bciVal = (t.bci_pct !== undefined ? t.bci_pct : 100.0);
   bciElem.textContent = bciVal.toFixed(1);
@@ -280,26 +384,122 @@ function handleTelemetryUpdate(t) {
     bciElem.style.color = "#4CAF50";
   }
 
-  // 3. Update Chart Buffers
-  coastSlopeMarkers = t.slope_markers || [];
-  appendChartData(t.rpm || 0, t.i_ma || 0, t.vib_g || 0);
+  // 3. Update Equipment Status Panel
+  const statSerial = document.getElementById("statSerial");
+  if (statSerial) {
+    if (t.connected) {
+      statSerial.textContent = `CONNECTED (${t.port || "ONLINE"})`;
+      statSerial.className = "badge-status badge-ok";
+    } else {
+      statSerial.textContent = "SIMULATION / OFFLINE";
+      statSerial.className = "badge-status badge-warn";
+    }
+  }
 
-  // 4. Redraw Strip Charts
+  const statController = document.getElementById("statController");
+  if (statController) {
+    statController.textContent = t.connected ? "ESP-32S DUAL-CORE" : "PYTHON SIMULATOR";
+    statController.className = "badge-status badge-ok";
+  }
+
+  const statMode = document.getElementById("statMode");
+  if (statMode) {
+    statMode.textContent = t.mode || "STANDBY";
+  }
+
+  const statActiveTest = document.getElementById("statActiveTest");
+  if (statActiveTest) {
+    if (t.mode === "RA_TEST") {
+      statActiveTest.textContent = "MEASURING Ra...";
+      statActiveTest.className = "badge-status badge-warn";
+    } else if (t.mode && t.mode.startsWith("COAST")) {
+      statActiveTest.textContent = "COAST-DOWN RECORDING";
+      statActiveTest.className = "badge-status badge-warn";
+    } else {
+      statActiveTest.textContent = "MONITORING READY";
+      statActiveTest.className = "badge-status badge-ok";
+    }
+  }
+
+  // 4. Update Telemetry Diagnostics Panel
+  const pktSeqElem = document.getElementById("diagPktSeq");
+  if (pktSeqElem) pktSeqElem.textContent = t.seq || 0;
+
+  const pulsesElem = document.getElementById("diagPulses");
+  if (pulsesElem) pulsesElem.textContent = t.pulses || 0;
+
+  const inaElem = document.getElementById("diagInaOk");
+  if (inaElem) {
+    const ok = t.ina_ok !== undefined ? Boolean(t.ina_ok) : true;
+    inaElem.textContent = ok ? "ONLINE" : "FAULT / OFFLINE";
+    inaElem.className = ok ? "diag-stat-val badge-ok" : "diag-stat-val badge-err";
+  }
+
+  const mpuElem = document.getElementById("diagMpuOk");
+  if (mpuElem) {
+    const ok = t.mpu_ok !== undefined ? Boolean(t.mpu_ok) : true;
+    mpuElem.textContent = ok ? "ONLINE" : "FAULT / OFFLINE";
+    mpuElem.className = ok ? "diag-stat-val badge-ok" : "diag-stat-val badge-err";
+  }
+
+  // 5. Update Chart Buffers & Canvas Redraw
+  coastSlopeMarkers = t.slope_markers || [];
+  appendChartData(t.rpm || 0, t.i_ma || 0, t.vib_g || 0, t.temp_c || 25.0);
+
   renderChartSpeed();
   renderChartElectVib();
+  renderChartTemp();
 }
 
-function appendChartData(rpm, current, vibration) {
+function appendChartData(rpm, current, vibration, temp) {
   chartBuffers.rpm.push(rpm);
   chartBuffers.current.push(current);
   chartBuffers.vibration.push(vibration * 400.0); // Scaled for dual-trace visibility
+  chartBuffers.temp.push(temp);
 
   if (chartBuffers.rpm.length > MAX_POINTS) {
     chartBuffers.rpm.shift();
     chartBuffers.current.shift();
     chartBuffers.vibration.shift();
+    chartBuffers.temp.shift();
   }
 }
+
+// Data Staleness & Packet Rate Monitor (runs at 2 Hz)
+setInterval(() => {
+  const now = Date.now();
+  const dtSec = (now - lastTelemetryTime) / 1000.0;
+  const stalenessElem = document.getElementById("statStaleness");
+  const readoutContainer = document.getElementById("readoutContainer");
+
+  if (dtSec > 1.2) {
+    if (stalenessElem) {
+      stalenessElem.textContent = `STALE (${dtSec.toFixed(1)}s)`;
+      stalenessElem.className = "badge-status badge-crit";
+    }
+    if (readoutContainer) {
+      readoutContainer.classList.add("readout-stale");
+    }
+  } else {
+    if (stalenessElem) {
+      stalenessElem.textContent = `ONLINE (${dtSec.toFixed(1)}s)`;
+      stalenessElem.className = "badge-status badge-ok";
+    }
+    if (readoutContainer) {
+      readoutContainer.classList.remove("readout-stale");
+    }
+  }
+
+  // Packet rate calculation
+  const elapsedSinceRateCheck = (now - lastRateCheckTime) / 1000.0;
+  if (elapsedSinceRateCheck >= 1.0) {
+    const rate = lastPacketCount / elapsedSinceRateCheck;
+    lastPacketCount = 0;
+    lastRateCheckTime = now;
+    const rateElem = document.getElementById("diagPktRate");
+    if (rateElem) rateElem.textContent = `${rate.toFixed(1)} Hz`;
+  }
+}, 500);
 
 // =============================================================================
 // ALARM LEDGER LOG AUDIT TRAIL
@@ -346,29 +546,42 @@ function renderAlarmLedger(logs) {
 // =============================================================================
 // HTML5 CANVAS STRIP CHART RENDERING ENGINE
 // =============================================================================
-let canvasSpeed, ctxSpeed, canvasElect, ctxElect;
+let canvasSpeed, ctxSpeed, canvasElect, ctxElect, canvasTemp, ctxTemp;
 
 function initCanvases() {
   canvasSpeed = document.getElementById("chartSpeed");
   ctxSpeed = canvasSpeed.getContext("2d");
   canvasElect = document.getElementById("chartElectVib");
   ctxElect = canvasElect.getContext("2d");
+  canvasTemp = document.getElementById("chartTemp");
+  ctxTemp = canvasTemp ? canvasTemp.getContext("2d") : null;
 
   resizeCanvases();
   window.addEventListener("resize", resizeCanvases);
 }
 
 function resizeCanvases() {
-  const rect1 = canvasSpeed.getBoundingClientRect();
-  canvasSpeed.width = rect1.width;
-  canvasSpeed.height = 150;
+  if (canvasSpeed) {
+    const rect1 = canvasSpeed.getBoundingClientRect();
+    canvasSpeed.width = rect1.width;
+    canvasSpeed.height = 135;
+  }
 
-  const rect2 = canvasElect.getBoundingClientRect();
-  canvasElect.width = rect2.width;
-  canvasElect.height = 150;
+  if (canvasElect) {
+    const rect2 = canvasElect.getBoundingClientRect();
+    canvasElect.width = rect2.width;
+    canvasElect.height = 135;
+  }
+
+  if (canvasTemp) {
+    const rect3 = canvasTemp.getBoundingClientRect();
+    canvasTemp.width = rect3.width;
+    canvasTemp.height = 110;
+  }
 
   renderChartSpeed();
   renderChartElectVib();
+  renderChartTemp();
 }
 
 function drawGrid(ctx, w, h, yMin, yMax, unit) {
@@ -403,7 +616,7 @@ function drawGrid(ctx, w, h, yMin, yMax, unit) {
     ctx.fillText(yVal.toFixed(0), padLeft - 6, py + 3);
   }
 
-  // Vertical ticks
+  // Vertical time ticks
   for (let j = 1; j <= 5; j++) {
     const px = padLeft + (j / 6) * plotW;
     ctx.beginPath();
@@ -417,7 +630,7 @@ function drawGrid(ctx, w, h, yMin, yMax, unit) {
 }
 
 function renderChartSpeed() {
-  if (!ctxSpeed) return;
+  if (!ctxSpeed || !canvasSpeed) return;
   const w = canvasSpeed.width;
   const h = canvasSpeed.height;
   const yMin = 0;
@@ -469,7 +682,7 @@ function renderChartSpeed() {
 }
 
 function renderChartElectVib() {
-  if (!ctxElect) return;
+  if (!ctxElect || !canvasElect) return;
   const w = canvasElect.width;
   const h = canvasElect.height;
   const yMin = 0;
@@ -507,4 +720,32 @@ function renderChartElectVib() {
     else ctxElect.lineTo(px, py);
   }
   ctxElect.stroke();
+}
+
+function renderChartTemp() {
+  if (!ctxTemp || !canvasTemp) return;
+  const w = canvasTemp.width;
+  const h = canvasTemp.height;
+  const yMin = 0;
+  const yMax = 80;
+
+  const { padLeft, padTop, plotW, plotH } = drawGrid(ctxTemp, w, h, yMin, yMax, "°C");
+
+  const tempBuf = chartBuffers.temp;
+  if (tempBuf.length < 2) return;
+
+  const dx = plotW / (MAX_POINTS - 1);
+  const xOffset = padLeft + (MAX_POINTS - tempBuf.length) * dx;
+
+  // Draw Temperature Trace (#FF7043)
+  ctxTemp.strokeStyle = "#FF7043";
+  ctxTemp.lineWidth = 2;
+  ctxTemp.beginPath();
+  for (let k = 0; k < tempBuf.length; k++) {
+    const px = xOffset + k * dx;
+    const py = padTop + plotH - (Math.max(0, Math.min(yMax, tempBuf[k])) / (yMax - yMin)) * plotH;
+    if (k === 0) ctxTemp.moveTo(px, py);
+    else ctxTemp.lineTo(px, py);
+  }
+  ctxTemp.stroke();
 }

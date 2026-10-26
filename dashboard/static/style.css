@@ -496,3 +496,162 @@ canvas {
   color: var(--color-critical);
   font-weight: bold;
 }
+
+/* =============================================================================
+   6. EQUIPMENT STATUS & TELEMETRY DIAGNOSTICS STYLES
+   ============================================================================= */
+.status-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.status-indicator-item {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-field);
+  border: 1px solid var(--border-color);
+  padding: 6px 8px;
+}
+
+.status-name {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+
+.badge-status {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: #00E5FF;
+}
+
+.badge-status.badge-warn {
+  color: var(--color-caution);
+}
+
+.badge-status.badge-crit {
+  color: var(--color-critical);
+}
+
+.badge-status.badge-ok {
+  color: var(--color-normal);
+}
+
+/* Proportional Speed Slider */
+.slider-row {
+  margin-top: 6px;
+  margin-bottom: 4px;
+}
+
+.scada-slider {
+  width: 100%;
+  height: 8px;
+  border-radius: 2px;
+  background: #141414;
+  outline: none;
+  border: 1px solid var(--border-color);
+  -webkit-appearance: none;
+}
+
+.scada-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 22px;
+  background: #0288D1;
+  border: 1px solid #FFFFFF;
+  cursor: pointer;
+}
+
+/* Telemetry Diagnostics Grid */
+.telemetry-diag-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.diag-stat-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: var(--bg-field);
+  border: 1px solid var(--border-color);
+  padding: 5px 8px;
+}
+
+.diag-stat-label {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.diag-stat-val {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.diag-stat-val.badge-ok {
+  color: var(--color-normal);
+}
+
+.diag-stat-val.badge-err {
+  color: var(--color-critical);
+}
+
+/* Data Staleness Visual Indicator */
+.readout-stale {
+  opacity: 0.35;
+  filter: grayscale(80%);
+  transition: opacity 0.3s ease;
+}
+
+/* Simulation Fault Injection Grid */
+.fault-btn-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.btn-fault {
+  background-color: var(--bg-field);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 6px 4px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.btn-fault:hover {
+  border-color: #FFB300;
+  color: #FFFFFF;
+}
+
+.btn-fault.fault-active {
+  background-color: #B71C1C;
+  border-color: #F44336;
+  color: #FFFFFF;
+}
+
+.btn-fault-clear {
+  grid-column: span 2;
+  background-color: #263238;
+  border-color: #455A64;
+  color: #B0BEC5;
+  margin-top: 2px;
+}
+
+.btn-fault-clear:hover {
+  background-color: #37474F;
+  color: #FFFFFF;
+}

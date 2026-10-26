@@ -29,6 +29,8 @@ try:
 except ImportError:
     SERIAL_AVAILABLE = False
 
+from simulation import DCMotorPhysicsSimulator
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -599,10 +601,11 @@ class SCADABackendEngine:
         )
         self.serial_worker.start()
 
-        # System State
+        # System State & High-Fidelity Physics Simulator
         self.is_sim_mode: bool = False
         self.sim_speed_pwm: float = 0.0
         self.sim_coast_active: bool = False
+        self.simulator = DCMotorPhysicsSimulator()
 
         self.latest_telemetry: Dict[str, Any] = {
             "mode": "IDLE",
@@ -942,11 +945,20 @@ class SCADABackendEngine:
     # --------------------------------------------------------------------------
     # Built-in High-Fidelity Physics Simulation Loop (for Offline Bench Testing)
     # --------------------------------------------------------------------------
+    def inject_faults(self, faults_dict: Dict[str, Any]):
+        """Injects or clears fault conditions in the DCMotorPhysicsSimulator."""
+        with self.lock:
+            self.simulator.set_faults(faults_dict)
+            self._add_alarm(AlarmSeverity.CAUTION, "SIM_FAULT", f"Injected simulation fault profile: {faults_dict}")
+
+    def clear_all_faults(self):
+        """Clears all active simulation faults."""
+        with self.lock:
+            self.simulator.clear_all_faults()
+            self._add_alarm(AlarmSeverity.NORMAL, "SIM_FAULT", "Cleared all active simulation faults")
+
     def _sim_loop(self):
-        """Simulates 10 Hz telemetry when no physical hardware is plugged in."""
-        sim_rpm = 0.0
-        sim_temp = 28.0
-        sim_curr = 0.0
+        """Simulates 10 Hz telemetry using the physics engine when no hardware is plugged in."""
         start_ts = time.time()
 
         while True:
@@ -954,51 +966,26 @@ class SCADABackendEngine:
 
             # Only simulate if serial port is not connected
             if not self.serial_worker.is_connected:
-                dt = 0.10
-                target_rpm = (self.sim_speed_pwm / 100.0) * 2400.0
-
-                if self.sim_coast_active:
-                    # Pure mechanical coast-down governed by J * domega/dt = - (Tc + b*omega)
-                    omega = sim_rpm * (2.0 * math.pi / 60.0)
-                    if omega > 0.5:
-                        Tc = 0.00035  # N*m
-                        b = 0.0000085 # N*m*s/rad
-                        J = 1.25e-5   # kg*m^2
-                        domega_dt = - (Tc + b * omega) / J
-                        omega = max(0.0, omega + domega_dt * dt)
-                        sim_rpm = omega * (60.0 / (2.0 * math.pi))
-                    else:
-                        sim_rpm = 0.0
-                        self.sim_coast_active = False
-                else:
-                    # First-order motor response
-                    sim_rpm += (target_rpm - sim_rpm) * 0.25
-
-                # Current calculation
-                if sim_rpm < 10.0 and self.sim_speed_pwm > 0:
-                    sim_curr = 2400.0 # Inrush
-                elif self.sim_speed_pwm > 0:
-                    sim_curr = 280.0 + (sim_rpm / 2400.0) * 150.0
-                else:
-                    sim_curr = 0.0
-
-                # Surface temperature dynamics
-                joule_heating = (sim_curr / 1000.0) ** 2 * 2.40 * 0.15
-                sim_temp += (joule_heating - (sim_temp - 25.0) * 0.02) * dt
-
-                # Vibration calculation (unbalance + bearing floor)
-                vib_base = 0.05 + (sim_rpm / 2400.0) * 0.22
+                with self.lock:
+                    self.simulator.set_pwm(self.sim_speed_pwm)
+                    telem = self.simulator.step(dt=0.10)
 
                 elapsed_ms = int((time.time() - start_ts) * 1000)
 
+                duty_8bit = int((self.sim_speed_pwm / 100.0) * 255.0)
                 frame = {
-                    "mode": f"RUN_{int(self.sim_speed_pwm)}",
-                    "v_bus": 12.04 if self.sim_speed_pwm > 0 else 12.18,
-                    "i_ma": round(sim_curr, 1),
-                    "rpm": round(sim_rpm, 1),
-                    "temp_c": round(sim_temp, 1),
-                    "vib_g": round(vib_base, 3),
-                    "ts_ms": elapsed_ms
+                    "mode": f"RUN_{int(self.sim_speed_pwm)}" if self.sim_speed_pwm > 0 else "IDLE",
+                    "v_bus": round(telem["bus_voltage_v"], 2),
+                    "i_ma": round(telem["current_ma"], 1),
+                    "rpm": round(telem["speed_rpm"], 1),
+                    "temp_c": round(telem["temp_c"], 1),
+                    "vib_g": round(telem["vibration_rms_g"], 3),
+                    "ts_ms": elapsed_ms,
+                    "duty": duty_8bit,
+                    "seq": int(telem["elapsed_sec"] * 10),
+                    "pulses": int(telem["pulses_window"]),
+                    "ina_ok": 1,
+                    "mpu_ok": 1
                 }
 
                 self._on_telemetry_frame(frame)
