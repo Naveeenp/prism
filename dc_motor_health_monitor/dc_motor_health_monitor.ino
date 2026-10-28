@@ -63,7 +63,6 @@
 #define PWM_RESOLUTION_BITS   8        // 8-bit resolution (0 - 255)
 #define PWM_LEDC_CHANNEL      0        // LEDC Channel 0
 #define TELEMETRY_PERIOD_MS   100      // 10 Hz Telemetry Transmission Rate
-#define WATCHDOG_TIMEOUT_MS   3000     // 3.0s failsafe auto-stop if serial communication drops
 
 // =============================================================================
 // HARDWARE SENSOR & DISPLAY OBJECTS
@@ -96,12 +95,11 @@ String   s_current_mode      = "STANDBY";
 float    s_rpm               = 0.0f;
 float    s_latest_temp_c     = 25.0f;
 
-// Non-blocking timer schedulers & watchdog
+// Non-blocking timer schedulers
 uint32_t s_last_telemetry_ms  = 0;
 uint32_t s_last_speed_calc_ms = 0;
 uint32_t s_last_temp_req_ms   = 0;
 uint32_t s_last_hb_toggle_ms  = 0;
-uint32_t s_last_cmd_rx_ms     = 0;     // Timestamp of last valid command for failsafe watchdog
 uint32_t s_telemetry_seq      = 0;     // Incremental packet sequence counter
 bool     s_hb_led_state       = false;
 
@@ -365,9 +363,6 @@ void processSerialCommands() {
     cmd.trim();
     if (cmd.length() == 0) continue;
 
-    // Reset communication watchdog on any valid command received
-    s_last_cmd_rx_ms = millis();
-
     // Command 1: Driver Master Power Switch: CMD:DRIVER_POWER:<ON|OFF|1|0>
     if (cmd.startsWith("CMD:DRIVER_POWER:")) {
       String state = cmd.substring(17);
@@ -490,7 +485,6 @@ void setup() {
   s_last_speed_calc_ms = millis();
 
   digitalWrite(PIN_LED_HEARTBEAT, LOW);
-  s_last_cmd_rx_ms = millis(); // Initialize watchdog timer on boot
   Serial.println("ACK:BOOT:ESP32_SCADA_SYSTEM_READY");
 }
 
@@ -502,13 +496,6 @@ void loop() {
 
   // 1. Process Incoming Serial Commands
   processSerialCommands();
-
-  // Communication Failsafe Watchdog: disarm and stop motor if no command received for > 3.0s while running
-  if (s_driver_armed && s_current_duty_8bit > 0 && (now_ms - s_last_cmd_rx_ms > WATCHDOG_TIMEOUT_MS)) {
-    setMotorDuty(0);
-    s_coast_test_state = COAST_STATE_IDLE;
-    Serial.println("ERR:WATCHDOG_TIMEOUT:MOTOR_STOPPED");
-  }
 
   // 2. Service Coast-Down Test Automation
   if (s_coast_test_state == COAST_STATE_SPINUP) {
