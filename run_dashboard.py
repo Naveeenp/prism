@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ================================================================================
-LAUNCH SCRIPT - DC MOTOR SCADA CONTROL & HEALTH MONITORING DASHBOARD
+PRISM LAUNCH SCRIPT - DC MOTOR CONTROL & HEALTH MONITORING WORKSTATION
 ================================================================================
 Usage:
     python run_dashboard.py [--port 8080] [--no-browser]
@@ -23,7 +23,7 @@ PORT = 8080
 def open_browser():
     time.sleep(1.2)
     url = f"http://localhost:{PORT}"
-    print(f">> Opening default web browser to: {url}")
+    print(f">> Opening PRISM workstation web browser to: {url}")
     webbrowser.open(url)
 
 if __name__ == "__main__":
@@ -42,5 +42,5 @@ if __name__ == "__main__":
         t = threading.Thread(target=open_browser, daemon=True)
         t.start()
 
-    print(f"Starting DC Motor Health Monitoring Localhost SCADA Dashboard on {host}:{PORT}...")
+    print(f"Starting PRISM Motor Health Monitoring Dashboard on {host}:{PORT}...")
     start_server(host=host, port=PORT)

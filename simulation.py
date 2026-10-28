@@ -213,8 +213,10 @@ class DCMotorPhysicsSimulator:
         omega_shaft = 2.0 * math.pi * rotational_freq_hz
         speed_ratio = current_rpm / MOTOR_MAX_NO_LOAD_RPM
 
-        a0 = 0.08 + (1.20 * (speed_ratio ** 1.5))
-        a1 = a0 * 0.35
+        # Scaled harmonic vibration: calibrated so 100% duty stays comfortably in NORMAL range (~0.45G)
+        # and doesn't trigger CAUTION (warn limit: 0.80G) during baseline un-faulted operation.
+        a0 = 0.04 + (0.38 * (speed_ratio ** 1.5))
+        a1 = a0 * 0.30
 
         # Fault Injection: High Vibration / Mechanical Shock
         mult = self.vib_multiplier
@@ -225,9 +227,9 @@ class DCMotorPhysicsSimulator:
             extra_vib = 0.0
 
         t = self.elapsed_time_s
-        vib_x = (a0 * mult * math.sin(omega_shaft * t)) + (a1 * mult * math.sin(2.0 * omega_shaft * t + 0.45)) + random.gauss(0.0, 0.03)
-        vib_y = (a0 * mult * math.cos(omega_shaft * t)) + (a1 * mult * math.cos(2.0 * omega_shaft * t + 1.20)) + random.gauss(0.0, 0.03)
-        vib_z = 1.0 + (a0 * mult * 0.4 * math.sin(omega_shaft * t + 2.1)) + random.gauss(0.0, 0.02)
+        vib_x = (a0 * mult * math.sin(omega_shaft * t)) + (a1 * mult * math.sin(2.0 * omega_shaft * t + 0.45)) + random.gauss(0.0, 0.02)
+        vib_y = (a0 * mult * math.cos(omega_shaft * t)) + (a1 * mult * math.cos(2.0 * omega_shaft * t + 1.20)) + random.gauss(0.0, 0.02)
+        vib_z = 1.0 + (a0 * mult * 0.25 * math.sin(omega_shaft * t + 2.1)) + random.gauss(0.0, 0.01)
         vib_dyn_z = vib_z - 1.0
         vib_rms_g = math.sqrt((vib_x ** 2) + (vib_y ** 2) + (vib_dyn_z ** 2)) + extra_vib
 
