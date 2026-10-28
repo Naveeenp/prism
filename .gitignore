@@ -106,3 +106,8 @@ desktop.ini
 
 # Log files
 *.log
+logs/*.csv
+!logs/.gitkeep
+
+# PlatformIO / C++ tooling
+compile_commands.json
