@@ -930,6 +930,28 @@ class SCADABackendEngine:
         else:
             self._add_alarm(AlarmSeverity.CRITICAL, "SAFETY", "E-STOP (Simulation Coast)")
 
+    def normal_wind_down(self):
+        """Gradually stages down speed at 10% per second."""
+        def _winddown_thread():
+            # If real hardware connected, dispatch CMD:WIND_DOWN to ESP32 firmware
+            if self.serial_worker.is_connected:
+                self.serial_worker.send_command("CMD:WIND_DOWN")
+            
+            # Continuous 10% per second decrement loop
+            while True:
+                with self.lock:
+                    if not self.driver_armed or self.sim_speed_pwm <= 0.0:
+                        break
+                    next_speed = max(0.0, self.sim_speed_pwm - 10.0)
+                
+                self.set_target_speed(next_speed)
+                if next_speed <= 0.0:
+                    break
+                time.sleep(1.0)
+
+        self._add_alarm(AlarmSeverity.NORMAL, "OPERATION", "Normal Controlled Wind-Down (10% per second)")
+        threading.Thread(target=_winddown_thread, daemon=True).start()
+
     def trigger_ra_measurement(self):
         """Issues in-situ locked/pulse test: CMD:MEASURE_RA"""
         self._add_alarm(AlarmSeverity.NORMAL, "DIAGNOSTIC", "Initiating In-Situ Armature Resistance (Ra) test pulse...")

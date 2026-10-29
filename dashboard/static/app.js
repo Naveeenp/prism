@@ -1,11 +1,35 @@
 /* ==============================================================================
-   INDUSTRIAL SCADA JAVASCRIPT CONTROLLER - PMDC MOTOR DIAGNOSTIC BENCH
+   PRISM TELEMETRY & DIAGNOSTICS JAVASCRIPT CONTROLLER
    Features:
-     - 10 Hz Real-Time SSE Ingestion with REST Fallback
+     - 10 Hz Real-Time Bi-Directional WebSocket Ingestion
+     - Dark, OLED, Light Theme Persistence & Live Switcher
      - High-Performance HTML5 Canvas 2D Strip Charts (Zero External Chart Libs)
      - Deceleration Slope Marker Rendering During Coast Test
+     - Smooth Normal Wind Down & Instant E-STOP Controls
      - Chronological Alarm & Event Ledger Synchronization
    ============================================================================== */
+
+let currentTheme = localStorage.getItem("prism_theme") || "dark";
+
+function setTheme(theme) {
+  currentTheme = theme;
+  document.body.setAttribute("data-theme", theme);
+  localStorage.setItem("prism_theme", theme);
+
+  // Update theme buttons active state
+  ["dark", "oled", "light"].forEach(t => {
+    const btn = document.getElementById(`theme${t.charAt(0).toUpperCase() + t.slice(1)}`);
+    if (btn) {
+      if (t === theme) btn.classList.add("active");
+      else btn.classList.remove("active");
+    }
+  });
+
+  // Re-render strip charts with proper theme colors
+  if (typeof resizeCanvases === "function") {
+    resizeCanvases();
+  }
+}
 
 let isConnected = false;
 let heartbeatToggle = false;
@@ -108,16 +132,67 @@ function playMultiProblemChime() {
   }
 }
 
+// Emergency Stop ADAS Triple-Beep Sequence (Honda ADAS Forward Collision Warning Style)
+// Three rapid high-pitched alert beeps synchronized with the visual red edge flashes
+function playAdasTripleBeep() {
+  if (!audioEnabled) return;
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    const beepTone = (startTime, freq = 2040, duration = 0.10) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = "square"; // Crisp, authoritative ADAS vehicle alert tone
+      osc.frequency.setValueAtTime(freq, startTime);
+
+      gain.gain.setValueAtTime(0.35, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(startTime);
+      osc.stop(startTime + duration);
+    };
+
+    const t0 = ctx.currentTime;
+    // 3 rapid successive beeps at 180ms intervals
+    beepTone(t0 + 0.00, 2040, 0.10);
+    beepTone(t0 + 0.18, 2040, 0.10);
+    beepTone(t0 + 0.36, 2040, 0.10);
+  } catch (err) {
+    console.warn("ADAS audio alert error:", err);
+  }
+}
+
+// Visual HUD Emergency Flash (Three red flashes on corners and edges, exactly synced with beeps)
+function triggerEmergencyFlash() {
+  document.body.classList.remove("emergency-flash-active");
+  // Force browser reflow so animation restarts cleanly on successive clicks
+  void document.body.offsetWidth;
+  document.body.classList.add("emergency-flash-active");
+  playAdasTripleBeep();
+
+  setTimeout(() => {
+    document.body.classList.remove("emergency-flash-active");
+  }, 700);
+}
+
 function toggleAudioMute() {
   audioEnabled = !audioEnabled;
   const btn = document.getElementById("btnMuteAudio");
   if (btn) {
+    const textSpan = btn.querySelector(".audio-text");
     if (audioEnabled) {
-      btn.textContent = "ALARM AUDIO: ON";
+      if (textSpan) textSpan.textContent = "AUDIO ON";
+      else btn.textContent = "AUDIO ON";
       btn.classList.remove("audio-muted");
       playPingAlert(); // Test chirp
     } else {
-      btn.textContent = "ALARM AUDIO: MUTED";
+      if (textSpan) textSpan.textContent = "MUTED";
+      else btn.textContent = "MUTED";
       btn.classList.add("audio-muted");
     }
   }
@@ -127,6 +202,7 @@ function toggleAudioMute() {
 // INITIALIZATION
 // =============================================================================
 window.addEventListener("DOMContentLoaded", () => {
+  setTheme(currentTheme);
   initCanvases();
   refreshPorts();
   startTelemetryStream();
@@ -287,6 +363,19 @@ function onSpeedSliderChange(val) {
 }
 
 async function sendEStop() {
+  triggerEmergencyFlash();
+
+  // Cancel any active client-side wind down timer
+  if (winddownClientTimer) {
+    clearInterval(winddownClientTimer);
+    winddownClientTimer = null;
+  }
+
+  const slider = document.getElementById("speedSlider");
+  if (slider) slider.value = 0;
+  const label = document.getElementById("speedSliderVal");
+  if (label) label.textContent = "0% (0 / 255)";
+
   try {
     await fetch("/api/control", {
       method: "POST",
@@ -295,6 +384,47 @@ async function sendEStop() {
     });
   } catch (e) {
     console.error("E-STOP error:", e);
+  }
+}
+
+let winddownClientTimer = null;
+
+async function sendWindDown() {
+  try {
+    await fetch("/api/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "wind_down" })
+    });
+
+    // Start client-side slider ramp down (2.0s per 1% decrement)
+    if (winddownClientTimer) {
+      clearInterval(winddownClientTimer);
+    }
+
+    const slider = document.getElementById("speedSlider");
+    const label = document.getElementById("speedSliderVal");
+
+    winddownClientTimer = setInterval(() => {
+      if (!slider) {
+        clearInterval(winddownClientTimer);
+        winddownClientTimer = null;
+        return;
+      }
+
+      let currentVal = parseInt(slider.value, 10);
+      if (currentVal > 0) {
+        currentVal = Math.max(0, currentVal - 10);
+        slider.value = currentVal;
+        const duty8bit = Math.round((currentVal / 100.0) * 255);
+        if (label) label.textContent = `${currentVal}% (${duty8bit} / 255)`;
+      } else {
+        clearInterval(winddownClientTimer);
+        winddownClientTimer = null;
+      }
+    }, 1000); // 10% per second
+  } catch (e) {
+    console.error("Wind-down error:", e);
   }
 }
 
@@ -491,8 +621,46 @@ function handleTelemetryUpdate(t) {
   document.getElementById("valRa").textContent = (t.ra_ohms || 2.40).toFixed(2);
   document.getElementById("valCoast").textContent = (t.coast_duration_s || 0.0).toFixed(2);
 
+  // Subtle alert state card styling for vibration and temperature
+  const vibCard = document.getElementById("valVib")?.closest(".readout-card");
+  if (vibCard) {
+    if ((t.vib_g || 0) >= 1.50) {
+      vibCard.classList.add("card-critical");
+      vibCard.classList.remove("card-caution");
+    } else if ((t.vib_g || 0) >= 0.80) {
+      vibCard.classList.add("card-caution");
+      vibCard.classList.remove("card-critical");
+    } else {
+      vibCard.classList.remove("card-caution", "card-critical");
+    }
+  }
+
+  const tempCard = document.getElementById("valTemp")?.closest(".readout-card");
+  if (tempCard) {
+    if ((t.temp_c || 0) >= 52.0) {
+      tempCard.classList.add("card-critical");
+      tempCard.classList.remove("card-caution");
+    } else if ((t.temp_c || 0) >= 45.0) {
+      tempCard.classList.add("card-caution");
+      tempCard.classList.remove("card-critical");
+    } else {
+      tempCard.classList.remove("card-caution", "card-critical");
+    }
+  }
+
   const dutyElem = document.getElementById("valDuty");
   if (dutyElem) dutyElem.textContent = (t.duty !== undefined ? t.duty : 0);
+
+  // Sync slider if not currently interacting and if in winddown
+  if (winddownClientTimer && t.duty !== undefined) {
+    const calcPct = Math.round((t.duty / 255.0) * 100);
+    const slider = document.getElementById("speedSlider");
+    const label = document.getElementById("speedSliderVal");
+    if (slider && Math.abs(parseInt(slider.value, 10) - calcPct) > 1) {
+      slider.value = calcPct;
+      if (label) label.textContent = `${calcPct}% (${t.duty} / 255)`;
+    }
+  }
 
   const bciElem = document.getElementById("valBci");
   const bciVal = (t.bci_pct !== undefined ? t.bci_pct : 100.0);
@@ -672,12 +840,29 @@ async function pollAlarms() {
   } catch (e) {}
 }
 
+let prevAlarmLogCount = 0;
+let prevLatestTimestamp = "";
+
 function renderAlarmLedger(logs) {
+  if (!logs || logs.length === 0) return;
+
+  const latestTimestamp = logs[0] ? logs[0].timestamp : "";
+  // If no new alarms arrived and count didn't change, avoid recreating rows
+  if (logs.length === prevAlarmLogCount && latestTimestamp === prevLatestTimestamp) {
+    return;
+  }
+  prevAlarmLogCount = logs.length;
+  prevLatestTimestamp = latestTimestamp;
+
   const tbody = document.getElementById("alarmTbody");
   tbody.innerHTML = "";
 
-  logs.forEach(ev => {
+  logs.forEach((ev, idx) => {
     const row = document.createElement("tr");
+    // Only animate the very newest entry (first row) on arrival, never run infinitely
+    if (idx === 0) {
+      row.classList.add("alarm-row-new");
+    }
 
     const tdTime = document.createElement("td");
     tdTime.textContent = ev.timestamp;
@@ -743,7 +928,22 @@ function resizeCanvases() {
 }
 
 function drawGrid(ctx, w, h, yMin, yMax, unit) {
-  ctx.fillStyle = "#0F0F0F";
+  // Theme-aware chart canvas backgrounds & gridlines
+  let bgFill = "#141414";
+  let gridLine = "#2A2A2A";
+  let textLabel = "#8A8A8A";
+
+  if (currentTheme === "oled") {
+    bgFill = "#000000";
+    gridLine = "#1F1F1F";
+    textLabel = "#757575";
+  } else if (currentTheme === "light") {
+    bgFill = "#F4F6F8";
+    gridLine = "#E0E0E0";
+    textLabel = "#607D8B";
+  }
+
+  ctx.fillStyle = bgFill;
   ctx.fillRect(0, 0, w, h);
 
   const padLeft = 45;
@@ -753,7 +953,7 @@ function drawGrid(ctx, w, h, yMin, yMax, unit) {
   const plotW = w - padLeft - padRight;
   const plotH = h - padTop - padBottom;
 
-  ctx.strokeStyle = "#2D2D2D";
+  ctx.strokeStyle = gridLine;
   ctx.lineWidth = 1;
   ctx.setLineDash([2, 4]);
 
@@ -768,7 +968,7 @@ function drawGrid(ctx, w, h, yMin, yMax, unit) {
     ctx.lineTo(padLeft + plotW, py);
     ctx.stroke();
 
-    ctx.fillStyle = "#8A8A8A";
+    ctx.fillStyle = textLabel;
     ctx.font = "9px Consolas, monospace";
     ctx.textAlign = "right";
     ctx.fillText(yVal.toFixed(0), padLeft - 6, py + 3);

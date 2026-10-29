@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ================================================================================
-PMDC MOTOR HEALTH MONITORING - INDUSTRIAL SCADA FASTAPI GATEWAY & WEBSOCKET SERVER
+PRISM MOTOR HEALTH WORKSTATION - FASTAPI GATEWAY & WEBSOCKET SERVER
 ================================================================================
 Compliance: ISA-101 Industrial Telemetry Ergonomics
 Backend: Uses backend_engine.SCADABackendEngine (ESP-32S Serial & Analytics)
@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 import logging
 
-logger = logging.getLogger("SCADAWebServer")
+logger = logging.getLogger("PRISMWebServer")
 
 # Ensure local workspace imports work reliably
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="PMDC Motor Health SCADA Gateway",
+    title="PRISM Motor Health Gateway",
     description="ISA-101 Industrial Telemetry and Predictive Diagnostic Web API",
     version="2.0.0",
     lifespan=lifespan
@@ -132,6 +132,10 @@ async def execute_control(payload: Dict[str, Any]):
     elif action in ["stop", "estop"]:
         engine.emergency_stop()
         return {"success": True, "message": "E-STOP Activated"}
+
+    elif action in ["wind_down", "winddown", "normal_stop"]:
+        engine.normal_wind_down()
+        return {"success": True, "message": "Normal Wind Down Initiated"}
 
     elif action == "ra_test":
         engine.trigger_ra_measurement()
@@ -225,15 +229,22 @@ async def websocket_telemetry(websocket: WebSocket):
 
 @app.get("/")
 async def serve_index():
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    return FileResponse(
+        os.path.join(STATIC_DIR, "index.html"),
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+    )
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
 
 def start_server(host="127.0.0.1", port=8080):
     print("\n" + "=" * 70)
-    print("  PMDC MOTOR HEALTH MONITOR - INDUSTRIAL FASTAPI & WEBSOCKET GATEWAY")
-    print("  Standards: ISA-101 Industrial Ergonomics | High-Contrast Charcoal")
+    print("  PRISM - PMDC MOTOR HEALTH MONITOR & TELEMETRY WORKSTATION")
+    print("  Standards: ISA-101 Industrial Ergonomics | High-Contrast Workspace")
     print("=" * 70)
     print(f"  URL              : http://{host}:{port}")
     print("  Transport        : Full-Duplex WebSocket (/ws/telemetry) + REST API")

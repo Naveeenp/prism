@@ -1,9 +1,20 @@
-# PMDC Motor Health Monitoring & Diagnostic System
-# Standards: ISA-101 Industrial Ergonomics & Telemetry
-# Microcontroller Target: ESP-32S (38-pin NodeMCU)
+# =============================================================================
+# PRISM - PMDC Motor Health Monitoring Workstation
+# Python Runtime Dependencies
+# Target: ESP-32S (38-pin NodeMCU) / Software-in-the-Loop Simulation
+# =============================================================================
 
-pyserial>=3.5
-fastapi>=0.100.0
-uvicorn>=0.22.0
-websockets>=11.0
-pytest>=7.4.0
+# --- Web Server & API ---
+fastapi>=0.115.0        # ASGI web framework, WebSocket + REST API gateway
+uvicorn>=0.30.0         # High-performance ASGI server
+starlette>=0.40.0       # FastAPI's underlying ASGI library (auto-installed with fastapi)
+
+# --- Hardware Serial Communication ---
+pyserial>=3.5           # UART/COM port communication with ESP32
+
+# --- WebSocket Transport ---
+websockets>=11.0        # WebSocket protocol support (used by uvicorn)
+
+# --- Testing ---
+pytest>=7.4.0           # Unit test runner for simulation and analytics modules
+anyio>=4.0.0            # Async test backend (required by FastAPI test utilities)

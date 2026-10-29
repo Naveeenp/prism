@@ -3,71 +3,91 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PMDC Motor Health Diagnostic SCADA Workstation - ESP32 [ISA-101]</title>
-  <link rel="stylesheet" href="style.css">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>PRISM - PMDC Motor Health Diagnostic Workstation [ISA-101]</title>
+  <link rel="stylesheet" href="style.css?v=2.2">
 </head>
-<body>
+<body data-theme="dark">
 
   <!-- =========================================================================
-       1. TOP STATUS BAR (ISA-101 COMPLIANT HEADER)
+       1. TOP STATUS BAR (MODERN OVERHAULED COMMAND HEADER)
        ========================================================================= -->
   <header class="status-bar">
+    <!-- Left: Identity & Heartbeat Pulse -->
     <div class="brand-group">
-      <div class="brand-tag">SCADA</div>
-      <div>
-        <h1 class="brand-title">PMDC MOTOR HEALTH MONITORING</h1>
-        <p class="brand-meta">ESP-32S NODE-MCU TELEMETRY BENCH &bull; 115200 BAUD</p>
+      <div class="brand-badge">
+        <span class="brand-tag">PRISM</span>
+        <span class="heartbeat-led" id="heartbeatLed" title="ESP32 Real-Time Link Telemetry Pulse"></span>
+      </div>
+      <div class="brand-text">
+        <h1 class="brand-title">PRISM MOTOR HEALTH</h1>
+        <p class="brand-meta">ESP-32S TELEMETRY WORKSTATION &bull; 115.2k BAUD</p>
       </div>
     </div>
 
-    <div class="serial-controls">
-      <div class="control-item">
-        <label for="portSelect">PORT:</label>
-        <select id="portSelect" class="scada-select"></select>
-        <button type="button" class="btn-util" onclick="refreshPorts()">SCAN</button>
-      </div>
+    <!-- Center: Serial Link Connection Bar -->
+    <div class="header-center-bar">
+      <div class="link-dock">
+        <div class="dock-field">
+          <label for="portSelect">PORT</label>
+          <select id="portSelect" class="prism-select"></select>
+          <button type="button" class="btn-dock" onclick="refreshPorts()" title="Scan for attached COM ports">SCAN</button>
+        </div>
 
-      <div class="control-item">
-        <label for="baudSelect">BAUD:</label>
-        <select id="baudSelect" class="scada-select">
-          <option value="115200" selected>115200</option>
-          <option value="57600">57600</option>
-          <option value="9600">9600</option>
-        </select>
-      </div>
+        <div class="dock-field">
+          <label for="baudSelect">BAUD</label>
+          <select id="baudSelect" class="prism-select">
+            <option value="115200" selected>115200</option>
+            <option value="57600">57600</option>
+            <option value="9600">9600</option>
+          </select>
+        </div>
 
-      <button type="button" class="btn-connect" id="btnConnect" onclick="toggleConnection()">
-        CONNECT
-      </button>
-
-      <!-- Audio Alert Mute Toggle -->
-      <button type="button" class="btn-util btn-audio-toggle" id="btnMuteAudio" onclick="toggleAudioMute()" title="Toggle audible ping & warning chime alerts">
-        ALARM AUDIO: ON
-      </button>
-
-      <!-- Heartbeat LED Indicator -->
-      <div class="heartbeat-group">
-        <span class="heartbeat-led" id="heartbeatLed"></span>
-        <span class="heartbeat-label">HEARTBEAT</span>
+        <button type="button" class="btn-connect" id="btnConnect" onclick="toggleConnection()">
+          CONNECT
+        </button>
       </div>
     </div>
 
-    <!-- Emergency Stop (E-STOP) Button -->
-    <button type="button" class="btn-estop" id="btnEstop" onclick="sendEStop()">
-      EMERGENCY STOP (E-STOP)
-    </button>
+    <!-- Right: Utility Controls & Safety Action Deck -->
+    <div class="header-right-deck">
+      <!-- Theme Switcher -->
+      <div class="theme-switch-group" role="group" aria-label="Theme Mode Selection">
+        <button type="button" class="btn-theme" id="themeDark" onclick="setTheme('dark')" title="Industrial Dark Theme">DARK</button>
+        <button type="button" class="btn-theme" id="themeOled" onclick="setTheme('oled')" title="Pure Black OLED Theme">OLED</button>
+        <button type="button" class="btn-theme" id="themeLight" onclick="setTheme('light')" title="High-Contrast Light Theme">LIGHT</button>
+      </div>
+
+      <!-- Audio Mute Pill -->
+      <button type="button" class="btn-audio-pill" id="btnMuteAudio" onclick="toggleAudioMute()" title="Toggle audible alarms">
+        <span class="audio-dot"></span>
+        <span class="audio-text">AUDIO ON</span>
+      </button>
+
+      <!-- Safety Stop Command Group -->
+      <div class="stop-command-group">
+        <button type="button" class="btn-wind-down" id="btnWindDown" onclick="sendWindDown()" title="Stage motor down: 75% -> 50% -> 25% -> 0%">
+          WIND DOWN
+        </button>
+        <button type="button" class="btn-estop" id="btnEstop" onclick="sendEStop()" title="Instant Emergency Stop (immediate 0%)">
+          EMERGENCY STOP
+        </button>
+      </div>
+    </div>
   </header>
 
   <!-- =========================================================================
-       MAIN SCADA WORKSPACE GRID
+       MAIN PRISM WORKSPACE GRID
        ========================================================================= -->
-  <main class="scada-workspace">
+  <main class="prism-workspace">
 
     <!-- LEFT COLUMN: CONTROLS & DIGITAL READOUTS -->
     <div class="col-left">
 
       <!-- 2. EQUIPMENT & DIAGNOSTIC STATUS PANEL -->
-      <section class="scada-panel">
+      <section class="prism-panel">
         <div class="panel-header">1. EQUIPMENT &amp; DIAGNOSTIC STATUS</div>
         <div class="panel-body status-summary-grid">
           <div class="status-indicator-item">
@@ -94,7 +114,7 @@
       </section>
 
       <!-- 3. OPERATING CONTROL PANEL -->
-      <section class="scada-panel" style="margin-top: 12px;">
+      <section class="prism-panel" style="margin-top: 12px;">
         <div class="panel-header">2. OPERATING CONTROL PANEL</div>
         <div class="panel-body">
           <div class="driver-power-container">
@@ -113,7 +133,7 @@
             <span id="speedSliderVal" style="color: #00E5FF; font-family: var(--font-mono); font-weight: bold;">0% (0 / 255)</span>
           </div>
           <div class="slider-row">
-            <input type="range" min="0" max="100" value="0" id="speedSlider" class="scada-slider" oninput="onSpeedSliderChange(this.value)">
+            <input type="range" min="0" max="100" value="0" id="speedSlider" class="prism-slider" oninput="onSpeedSliderChange(this.value)">
           </div>
 
           <div class="control-section-label" style="margin-top: 12px;">TARGET SPEED PRESETS (LEDC PWM):</div>
@@ -149,7 +169,7 @@
       </section>
 
       <!-- 4. DIGITAL PROCESS VALUES (ENGINEERING READOUTS) -->
-      <section class="scada-panel" style="margin-top: 12px; flex: 1;">
+      <section class="prism-panel" style="margin-top: 12px; flex: 1;">
         <div class="panel-header">3. DIGITAL PROCESS VALUES</div>
         <div class="panel-body process-readouts-grid" id="readoutContainer">
 
@@ -243,7 +263,7 @@
     <div class="col-right">
 
       <!-- 5. STRIP-CHART TRENDS -->
-      <section class="scada-panel">
+      <section class="prism-panel">
         <div class="panel-header">4. STRIP-CHART TRENDS (REAL-TIME 2D LINE PLOTS)</div>
         <div class="panel-body charts-wrapper">
 
@@ -281,7 +301,7 @@
       </section>
 
       <!-- 6. TELEMETRY & HARDWARE DIAGNOSTICS PANEL -->
-      <section class="scada-panel" style="margin-top: 10px;">
+      <section class="prism-panel" style="margin-top: 10px;">
         <div class="panel-header">5. TELEMETRY &amp; HARDWARE DIAGNOSTICS</div>
         <div class="panel-body telemetry-diag-grid">
           <div class="diag-stat-card">
@@ -312,10 +332,10 @@
       </section>
 
       <!-- 7. ALARM & EVENT LEDGER -->
-      <section class="scada-panel" style="margin-top: 10px;">
+      <section class="prism-panel" style="margin-top: 10px;">
         <div class="panel-header">6. THRESHOLD ALARM &amp; EVENT LEDGER</div>
         <div class="panel-body table-container">
-          <table class="scada-table" id="alarmTable">
+          <table class="prism-table" id="alarmTable">
             <thead>
               <tr>
                 <th style="width: 110px;">TIMESTAMP</th>
@@ -335,6 +355,6 @@
 
   </main>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=2.3"></script>
 </body>
 </html>

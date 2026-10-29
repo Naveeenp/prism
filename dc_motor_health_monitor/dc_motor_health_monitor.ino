@@ -108,6 +108,11 @@ enum CoastTestState { COAST_STATE_IDLE, COAST_STATE_SPINUP, COAST_STATE_COASTING
 CoastTestState s_coast_test_state = COAST_STATE_IDLE;
 uint32_t s_coast_start_ms = 0;
 
+// Controlled Wind-Down state machine (2.0s per 1% speed reduction)
+bool     s_winddown_active   = false;
+float    s_winddown_pct      = 0.0f;
+uint32_t s_last_winddown_ms  = 0;
+
 // =============================================================================
 // OPTICAL ENCODER HARDWARE ISR (GPIO 18)
 // =============================================================================
@@ -321,7 +326,7 @@ void updateOLED(float v_bus, float i_ma, float temp_c, float vib_g) {
   display.setTextColor(SH110X_BLACK);
   display.setTextSize(1);
   display.setCursor(4, 1);
-  display.print("PMDC MOTOR SCADA");
+  display.print("PRISM MOTOR BENCH");
 
   // Telemetry Rows
   display.setTextColor(SH110X_WHITE);
@@ -386,9 +391,24 @@ void processSerialCommands() {
     }
     // Command 3: Emergency Stop: CMD:ESTOP
     else if (cmd.equalsIgnoreCase("CMD:ESTOP") || cmd.equalsIgnoreCase("STOP")) {
+      s_winddown_active = false;
       setMotorDuty(0);
       s_coast_test_state = COAST_STATE_IDLE;
       Serial.println("ACK:ESTOP");
+    }
+    // Command 3B: Controlled Normal Wind Down: CMD:WIND_DOWN (2.0s per 1% reduction)
+    else if (cmd.equalsIgnoreCase("CMD:WIND_DOWN") || cmd.equalsIgnoreCase("CMD:NORMAL_STOP")) {
+      s_coast_test_state = COAST_STATE_IDLE;
+      if (!s_driver_armed || s_current_duty_8bit == 0) {
+        setMotorDuty(0);
+        s_winddown_active = false;
+        Serial.println("ACK:WIND_DOWN:COMPLETE");
+      } else {
+        s_winddown_active = true;
+        s_winddown_pct = ((float)s_current_duty_8bit / 255.0f) * 100.0f;
+        s_last_winddown_ms = millis();
+        Serial.printf("ACK:WIND_DOWN:STARTED:pct=%.1f\r\n", s_winddown_pct);
+      }
     }
     // Command 4: Automated Coast-Down Test: CMD:RUN_COAST_TEST
     else if (cmd.equalsIgnoreCase("CMD:RUN_COAST_TEST")) {
@@ -470,7 +490,7 @@ void setup() {
     display.setTextSize(1);
     display.setTextColor(SH110X_WHITE);
     display.setCursor(8, 26);
-    display.println("ESP32 SCADA BENCH");
+    display.println("ESP32 PRISM BENCH");
     display.setCursor(8, 38);
     display.println("ONLINE - 115200");
     display.display();
@@ -485,7 +505,7 @@ void setup() {
   s_last_speed_calc_ms = millis();
 
   digitalWrite(PIN_LED_HEARTBEAT, LOW);
-  Serial.println("ACK:BOOT:ESP32_SCADA_SYSTEM_READY");
+  Serial.println("ACK:BOOT:ESP32_PRISM_SYSTEM_READY");
 }
 
 // =============================================================================
@@ -496,6 +516,24 @@ void loop() {
 
   // 1. Process Incoming Serial Commands
   processSerialCommands();
+
+  // 1B. Service Normal Controlled Wind-Down (10% per second reduction)
+  if (s_winddown_active) {
+    if (now_ms - s_last_winddown_ms >= 1000) {
+      s_last_winddown_ms = now_ms;
+      if (s_winddown_pct > 10.0f) {
+        s_winddown_pct -= 10.0f;
+        uint8_t d = (uint8_t)roundf((s_winddown_pct / 100.0f) * 255.0f);
+        setMotorDuty(d, true);
+        Serial.printf("ACK:WIND_DOWN:STEP:pct=%.0f:duty=%d\r\n", s_winddown_pct, d);
+      } else {
+        s_winddown_pct = 0.0f;
+        setMotorDuty(0);
+        s_winddown_active = false;
+        Serial.println("ACK:WIND_DOWN:COMPLETE");
+      }
+    }
+  }
 
   // 2. Service Coast-Down Test Automation
   if (s_coast_test_state == COAST_STATE_SPINUP) {

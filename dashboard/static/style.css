@@ -1,10 +1,11 @@
 /* ==============================================================================
-   INDUSTRIAL SCADA STYLESHEET - PMDC MOTOR DIAGNOSTIC BENCH
+   PRISM TELEMETRY & DIAGNOSTICS WORKSTATION STYLESHEET
    Compliance: ISA-101 Ergonomics & High-Contrast Industrial Standard
    Zero Glassmorphism | Zero Blur | Zero Glow Effects | Zero Pseudo-AI Buzzwords
    ============================================================================== */
 
 :root {
+  /* Default: Industrial Dark Mode */
   --bg-dark: #1E1E1E;
   --bg-panel: #2A2A2A;
   --bg-field: #141414;
@@ -21,8 +22,51 @@
   --color-estop: #D32F2F;
   --color-active: #0288D1;
 
+  --btn-winddown-bg: #37474F;
+  --btn-winddown-border: #546E7A;
+  --btn-winddown-hover: #455A64;
+  --btn-winddown-text: #ECEFF1;
+
   --font-mono: "Consolas", "Roboto Mono", "JetBrains Mono", monospace;
   --font-ui: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+
+  --transition-theme: background-color 0.25s ease, border-color 0.25s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* OLED Mode (Pure Pitch Black #000000 with High Contrast #161616 borders) */
+body[data-theme="oled"] {
+  --bg-dark: #000000;
+  --bg-panel: #0A0A0A;
+  --bg-field: #000000;
+  --border-color: #262626;
+  --border-focus: #00B0FF;
+
+  --text-primary: #ECECEC;
+  --text-muted: #757575;
+  --text-emphasis: #FFFFFF;
+
+  --btn-winddown-bg: #1A2327;
+  --btn-winddown-border: #37474F;
+  --btn-winddown-hover: #263238;
+  --btn-winddown-text: #CFD8DC;
+}
+
+/* Light Mode (Ergonomic Crisp Industrial Daylight Palette) */
+body[data-theme="light"] {
+  --bg-dark: #ECEFF1;
+  --bg-panel: #FFFFFF;
+  --bg-field: #F4F6F8;
+  --border-color: #CFD8DC;
+  --border-focus: #0288D1;
+
+  --text-primary: #263238;
+  --text-muted: #607D8B;
+  --text-emphasis: #0D1B2A;
+
+  --btn-winddown-bg: #455A64;
+  --btn-winddown-border: #37474F;
+  --btn-winddown-hover: #37474F;
+  --btn-winddown-text: #FFFFFF;
 }
 
 * {
@@ -39,10 +83,63 @@ body {
   padding: 10px 14px;
   overflow-x: hidden;
   user-select: none;
+  transition: var(--transition-theme);
+  min-height: 100vh;
+  position: relative;
 }
 
 /* =============================================================================
-   1. TOP STATUS BAR (ISA-101 COMPLIANT HEADER)
+   EMERGENCY STOP (ADAS STYLE) CORNER & EDGE RED FLASH ANIMATION
+   Three distinct high-intensity strobe pulses matching the 3x audio chime (540ms total)
+   ============================================================================= */
+@keyframes adasEmergencyStrobe {
+  0% {
+    box-shadow: inset 0 0 0 0 transparent;
+  }
+  14% {
+    box-shadow: inset 0 0 35px 12px rgba(244, 67, 54, 0.95), 0 0 50px 15px rgba(211, 47, 47, 0.85);
+  }
+  28% {
+    box-shadow: inset 0 0 0 0 transparent;
+  }
+  42% {
+    box-shadow: inset 0 0 35px 12px rgba(244, 67, 54, 0.95), 0 0 50px 15px rgba(211, 47, 47, 0.85);
+  }
+  56% {
+    box-shadow: inset 0 0 0 0 transparent;
+  }
+  70% {
+    box-shadow: inset 0 0 45px 16px rgba(255, 23, 68, 1.0), 0 0 60px 20px rgba(211, 47, 47, 0.95);
+  }
+  85% {
+    box-shadow: inset 0 0 10px 4px rgba(244, 67, 54, 0.4);
+  }
+  100% {
+    box-shadow: inset 0 0 0 0 transparent;
+  }
+}
+
+body.emergency-flash-active {
+  animation: adasEmergencyStrobe 0.60s ease-out forwards;
+}
+
+/* Red Corner Accents during E-STOP strobe */
+body.emergency-flash-active::before {
+  content: "";
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none;
+  background: 
+    radial-gradient(circle at top left, rgba(255, 23, 68, 0.8) 0%, transparent 25%),
+    radial-gradient(circle at top right, rgba(255, 23, 68, 0.8) 0%, transparent 25%),
+    radial-gradient(circle at bottom left, rgba(255, 23, 68, 0.8) 0%, transparent 25%),
+    radial-gradient(circle at bottom right, rgba(255, 23, 68, 0.8) 0%, transparent 25%);
+  z-index: 99999;
+  animation: adasEmergencyStrobe 0.60s ease-out forwards;
+}
+
+/* =============================================================================
+   1. TOP STATUS BAR (MODERN INDUSTRIAL COMMAND DECK)
    ============================================================================= */
 .status-bar {
   display: flex;
@@ -50,14 +147,29 @@ body {
   align-items: center;
   background-color: var(--bg-panel);
   border: 1px solid var(--border-color);
-  padding: 8px 16px;
-  margin-bottom: 10px;
+  padding: 8px 14px;
+  margin-bottom: 12px;
+  gap: 16px;
+  border-radius: 4px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
 }
 
+/* Left: Identity & Pulse */
 .brand-group {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 250px;
+}
+
+.brand-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: var(--bg-field);
+  border: 1px solid var(--border-color);
+  padding: 4px 8px;
+  border-radius: 3px;
 }
 
 .brand-tag {
@@ -65,149 +177,283 @@ body {
   color: #FFFFFF;
   font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 800;
-  padding: 4px 8px;
-  letter-spacing: 1px;
+  font-weight: 900;
+  padding: 3px 6px;
+  letter-spacing: 1.5px;
+  border-radius: 2px;
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
 }
 
 .brand-title {
-  font-size: 15px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 800;
   color: var(--text-emphasis);
   font-family: var(--font-mono);
   letter-spacing: 0.5px;
+  white-space: nowrap;
 }
 
 .brand-meta {
-  font-size: 10px;
+  font-size: 9.5px;
   color: var(--text-muted);
   font-family: var(--font-mono);
+  white-space: nowrap;
 }
 
-.serial-controls {
+/* Center: Docked Serial Link Panel */
+.header-center-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: center;
+  flex: 1;
 }
 
-.control-item {
+.link-dock {
+  display: flex;
+  align-items: center;
+  background-color: var(--bg-field);
+  border: 1px solid var(--border-color);
+  padding: 3px 8px;
+  border-radius: 4px;
+  gap: 10px;
+}
+
+.dock-field {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
   font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
   color: var(--text-muted);
 }
 
-.scada-select {
-  background-color: var(--bg-field);
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  padding: 4px 8px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  outline: none;
+.dock-field label {
+  font-size: 10px;
+  color: var(--text-muted);
 }
 
-.scada-select:focus {
+.btn-dock {
+  background-color: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  padding: 3px 8px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: all 0.15s ease;
+}
+
+.btn-dock:hover {
+  background-color: var(--color-active);
+  color: #FFFFFF;
+  border-color: #0277BD;
+}
+
+.prism-select, .scada-select {
+  background-color: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  padding: 3px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  outline: none;
+  border-radius: 2px;
+  transition: var(--transition-theme);
+}
+
+.prism-select:focus, .scada-select:focus {
   border-color: var(--border-focus);
 }
 
-.btn-util {
-  background-color: var(--bg-dark);
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  padding: 4px 8px;
-  font-size: 11px;
-  font-family: var(--font-mono);
-  cursor: pointer;
-}
-
-.btn-util:hover {
-  background-color: #333333;
-}
-
-.btn-audio-toggle {
-  background-color: #1B5E20;
-  color: #A5D6A7;
-  border: 1px solid #2E7D32;
-  font-weight: 700;
-  padding: 6px 12px;
-}
-
-.btn-audio-toggle:hover {
+.btn-connect {
   background-color: #2E7D32;
   color: #FFFFFF;
-}
-
-.btn-audio-toggle.audio-muted {
-  background-color: #37474F;
-  color: #90A4AE;
-  border-color: #455A64;
-}
-
-.btn-connect {
-  background-color: var(--color-normal);
-  color: #FFFFFF;
-  border: 1px solid #2E7D32;
-  padding: 6px 16px;
-  font-size: 11px;
-  font-weight: 700;
+  border: 1px solid #1B5E20;
+  padding: 4px 12px;
+  font-size: 10.5px;
+  font-weight: 800;
   font-family: var(--font-mono);
   cursor: pointer;
+  border-radius: 2px;
+  transition: all 0.15s ease;
+}
+
+.btn-connect:hover {
+  background-color: #388E3C;
 }
 
 .btn-connect.connected {
-  background-color: var(--color-critical);
-  border-color: #C62828;
+  background-color: #C62828;
+  border-color: #B71C1C;
 }
 
-.heartbeat-group {
+.btn-connect.connected:hover {
+  background-color: #D32F2F;
+}
+
+/* Right: Deck controls & safety actions */
+.header-right-deck {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Theme Switcher Controls */
+.theme-switch-group {
+  display: flex;
+  background-color: var(--bg-field);
+  border: 1px solid var(--border-color);
+  padding: 2px;
+  gap: 2px;
+  border-radius: 3px;
+}
+
+.btn-theme {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 3px 7px;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+  border-radius: 2px;
+  transition: all 0.15s ease;
+}
+
+.btn-theme:hover {
+  color: var(--text-emphasis);
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.btn-theme.active {
+  background-color: var(--color-active);
+  color: #FFFFFF;
+  border-color: #0277BD;
+}
+
+/* Audio Pill Button */
+.btn-audio-pill {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-left: 8px;
-}
-
-.heartbeat-led {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background-color: #424242;
+  background-color: var(--bg-field);
   border: 1px solid var(--border-color);
-  display: inline-block;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 4px 9px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
 }
 
-.heartbeat-led.active {
+.btn-audio-pill .audio-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
   background-color: #00E676;
 }
 
-.heartbeat-label {
-  font-size: 10px;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
+.btn-audio-pill.audio-muted {
+  opacity: 0.6;
 }
 
-.btn-estop {
-  background-color: var(--color-estop);
-  color: #FFFFFF;
-  border: 2px solid #B71C1C;
-  padding: 8px 18px;
-  font-size: 12px;
-  font-weight: 900;
+.btn-audio-pill.audio-muted .audio-dot {
+  background-color: #757575;
+}
+
+.btn-audio-pill:hover {
+  border-color: var(--border-focus);
+}
+
+/* Stop Commands */
+.stop-command-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-wind-down {
+  background-color: var(--btn-winddown-bg);
+  color: var(--btn-winddown-text);
+  border: 1px solid var(--btn-winddown-border);
+  padding: 6px 13px;
+  font-size: 10.5px;
+  font-weight: 800;
   font-family: var(--font-mono);
   cursor: pointer;
   letter-spacing: 0.5px;
+  border-radius: 3px;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn-wind-down:hover {
+  background-color: var(--btn-winddown-hover);
+  border-color: #90A4AE;
+  transform: translateY(-1px);
+}
+
+.btn-wind-down:active {
+  transform: translateY(0);
+}
+
+.btn-estop {
+  background-color: #D32F2F;
+  color: #FFFFFF;
+  border: 1px solid #B71C1C;
+  padding: 6px 14px;
+  font-size: 10.5px;
+  font-weight: 900;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  letter-spacing: 0.8px;
+  border-radius: 3px;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(211, 47, 47, 0.4);
 }
 
 .btn-estop:hover {
   background-color: #B71C1C;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(183, 28, 28, 0.6);
+}
+
+.btn-estop:active {
+  transform: translateY(0);
+}
+
+/* Heartbeat Indicator */
+.heartbeat-led {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background-color: #424242;
+  border: 1px solid var(--border-color);
+  display: inline-block;
+  transition: background-color 0.1s ease;
+}
+
+.heartbeat-led.active {
+  background-color: #00E676;
+  box-shadow: 0 0 5px #00E676;
 }
 
 /* =============================================================================
    MAIN WORKSPACE LAYOUT
    ============================================================================= */
-.scada-workspace {
+.prism-workspace, .scada-workspace {
   display: flex;
   gap: 12px;
   align-items: stretch;
@@ -225,15 +471,16 @@ body {
   flex-direction: column;
 }
 
-.scada-panel {
+.prism-panel, .scada-panel {
   background-color: var(--bg-panel);
   border: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
+  transition: var(--transition-theme);
 }
 
 .panel-header {
-  background-color: #242424;
+  background-color: var(--bg-dark);
   border-bottom: 1px solid var(--border-color);
   padding: 6px 12px;
   font-size: 11px;
@@ -241,6 +488,7 @@ body {
   color: var(--text-emphasis);
   font-family: var(--font-mono);
   letter-spacing: 0.5px;
+  transition: var(--transition-theme);
 }
 
 .panel-body {
@@ -399,6 +647,13 @@ body {
   background-color: var(--bg-field);
   border: 1px solid var(--border-color);
   padding: 8px 10px;
+  position: relative;
+  transition: transform 0.18s ease, border-color 0.2s ease, box-shadow 0.2s ease, var(--transition-theme);
+}
+
+.readout-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-focus);
 }
 
 .readout-tag {
@@ -407,6 +662,7 @@ body {
   color: var(--text-muted);
   text-transform: uppercase;
   margin-bottom: 2px;
+  transition: color 0.2s ease;
 }
 
 .readout-val-row {
@@ -420,6 +676,36 @@ body {
   font-weight: 700;
   font-family: var(--font-mono);
   color: var(--text-emphasis);
+  transition: color 0.2s ease;
+}
+
+/* Subtle pulse animation for updated or alerting telemetry metrics */
+@keyframes metricPulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.025); }
+  100% { transform: scale(1); }
+}
+
+.metric-updated {
+  animation: metricPulse 0.35s ease-out;
+}
+
+@keyframes cautionGlow {
+  0%, 100% { box-shadow: inset 0 0 0 1px rgba(255, 193, 7, 0.4); }
+  50% { box-shadow: inset 0 0 8px 1px rgba(255, 193, 7, 0.7); }
+}
+
+@keyframes criticalGlow {
+  0%, 100% { box-shadow: inset 0 0 0 1px rgba(244, 67, 54, 0.5); }
+  50% { box-shadow: inset 0 0 10px 2px rgba(244, 67, 54, 0.85); }
+}
+
+.readout-card.card-caution {
+  animation: cautionGlow 2s infinite ease-in-out;
+}
+
+.readout-card.card-critical {
+  animation: criticalGlow 1.2s infinite ease-in-out;
 }
 
 .readout-unit {
@@ -475,30 +761,46 @@ canvas {
   padding: 0;
 }
 
-.scada-table {
+.prism-table, .scada-table {
   width: 100%;
   border-collapse: collapse;
   font-family: var(--font-mono);
   font-size: 11px;
 }
 
-.scada-table th {
-  background-color: #212121;
+.prism-table th, .scada-table th {
+  background-color: var(--bg-dark);
   color: var(--text-muted);
   padding: 6px 10px;
   text-align: left;
   border-bottom: 1px solid var(--border-color);
   position: sticky;
   top: 0;
+  transition: var(--transition-theme);
 }
 
-.scada-table td {
+.prism-table td, .scada-table td {
   padding: 4px 10px;
-  border-bottom: 1px solid #292929;
+  border-bottom: 1px solid var(--border-color);
+  transition: var(--transition-theme);
 }
 
-.scada-table tr:hover {
-  background-color: #1F1F1F;
+.prism-table tr, .scada-table tr {
+  transition: background-color 0.15s ease;
+}
+
+.prism-table tr:hover, .scada-table tr:hover {
+  background-color: rgba(2, 136, 209, 0.08);
+}
+
+/* Subtle fade-in for newly inserted alarm rows */
+@keyframes rowFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.alarm-row-new {
+  animation: rowFadeIn 0.3s ease-out;
 }
 
 .severity-NORMAL {
@@ -566,17 +868,18 @@ canvas {
   margin-bottom: 4px;
 }
 
-.scada-slider {
+.prism-slider, .scada-slider {
   width: 100%;
   height: 8px;
   border-radius: 2px;
-  background: #141414;
+  background: var(--bg-field);
   outline: none;
   border: 1px solid var(--border-color);
   -webkit-appearance: none;
+  transition: var(--transition-theme);
 }
 
-.scada-slider::-webkit-slider-thumb {
+.prism-slider::-webkit-slider-thumb, .scada-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: 18px;
@@ -584,6 +887,11 @@ canvas {
   background: #0288D1;
   border: 1px solid #FFFFFF;
   cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+.prism-slider::-webkit-slider-thumb:hover, .scada-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
 }
 
 /* Telemetry Diagnostics Grid */
